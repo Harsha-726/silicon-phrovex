@@ -14,3 +14,14 @@
 
 .event-tag { background:#fff4e8; color:#aa7344; padding:2px 6px; border-radius:4px; font-size:10px; }
 .calendar-task.event-calendar { background:#fff4e8; color:#aa7344; }
+
+#onboarding-form fieldset { display:grid; gap:12px; }
+.class-preference-list { display:grid; gap:12px; }
+.class-preference { display:grid; grid-template-columns:minmax(130px,1.1fr) 1fr 1fr; gap:12px; align-items:end; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-soft); }
+.class-preference strong { align-self:center; font-size:12px; }
+.class-add-row,.class-management-row { display:flex; align-items:center; gap:9px; }
+.class-add-row input { flex:1; }
+.class-management-row input { flex:1; }
+.class-management-row .danger-button { flex:0 0 auto; }
+.class-management { gap:12px; }
+@media (max-width:560px) { .class-preference { grid-template-columns:1fr; align-items:stretch; } .class-preference strong { margin-bottom:2px; } .class-management-row { align-items:stretch; flex-direction:column; } .class-management-row .danger-button { align-self:flex-start; } }

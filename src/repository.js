@@ -1,3 +1,5 @@
+import { getAuthHeaders } from './platform.js';
+
 function toRow(task) {
   return {
     ...(task.id && /^[0-9a-f-]{36}$/i.test(task.id) ? { id: task.id } : {}),
@@ -25,7 +27,7 @@ function fromRow(row) {
 }
 
 async function request(url, options = {}) {
-  const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
+  const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()), ...(options.headers || {}) } });
   if (!response.ok) throw new Error(`Remote repository unavailable (${response.status})`);
   return response.status === 204 ? null : response.json();
 }
@@ -34,7 +36,7 @@ export function createTaskRepository() {
   return {
     async load() { const payload = await request('/api/tasks'); return (payload.tasks || []).map(fromRow); },
     async loadProfile() { return request('/api/profile'); },
-    async saveProfile(profile) { return request('/api/profile', { method: 'PATCH', body: JSON.stringify({ profile: { onboarding_complete: Boolean(profile.onboardingComplete), settings: profile } }) }); },
+    async saveProfile(profile, classes = []) { return request('/api/profile', { method: 'PATCH', body: JSON.stringify({ profile: { onboarding_complete: Boolean(profile.onboardingComplete), settings: { ...profile, classes } } }) }); },
     async create(task) { const payload = await request('/api/tasks', { method: 'POST', body: JSON.stringify({ task: toRow(task) }) }); return payload.task ? fromRow(payload.task) : task; },
     async update(task) { const payload = await request(`/api/tasks?id=${encodeURIComponent(task.id)}`, { method: 'PATCH', body: JSON.stringify({ task: toRow(task) }) }); return payload.task ? fromRow(payload.task) : task; },
     async remove(taskId) { await request(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' }); },
