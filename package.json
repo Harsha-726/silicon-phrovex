@@ -1,0 +1,15 @@
+{
+  "name": "silico",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "lint": "node scripts/lint.mjs",
+    "build": "vite build",
+    "test": "node --test test/core.test.js"
+  },
+  "devDependencies": {
+    "vite": "^7.1.3"
+  }
+}

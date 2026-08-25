@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7f5" />
+    <title>Silico — Make time for what matters</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script crossorigin="anonymous" src="https://%VITE_CLERK_DOMAIN%/npm/@clerk/ui@1/dist/ui.browser.js"></script>
+    <script crossorigin="anonymous" data-clerk-publishable-key="%VITE_CLERK_PUBLISHABLE_KEY%" src="https://%VITE_CLERK_DOMAIN%/npm/@clerk/clerk-js@6/dist/clerk.browser.js"></script>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
