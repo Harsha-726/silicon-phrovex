@@ -15,6 +15,14 @@
 .event-tag { background:#fff4e8; color:#aa7344; padding:2px 6px; border-radius:4px; font-size:10px; }
 .calendar-task.event-calendar { background:#fff4e8; color:#aa7344; }
 
+.checkbox.priority-1 { border-color:#c4c4bc; color:#8a8a83; }
+.checkbox.priority-2 { border-color:#7c8be0; color:#5967c7; }
+.checkbox.priority-3 { border-color:#d5965f; color:#b66e37; }
+.checkbox.priority-4 { border-color:#d36a6a; color:#c14f4f; }
+.checkbox.priority-2:hover { background:#eef0ff; }
+.checkbox.priority-3:hover { background:#fff4e8; }
+.checkbox.priority-4:hover { background:#fff1f1; }
+
 #onboarding-form fieldset { display:grid; gap:12px; }
 .class-preference-list { display:grid; gap:12px; }
 .class-preference { display:grid; grid-template-columns:minmax(130px,1.1fr) 1fr 1fr; gap:12px; align-items:end; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-soft); }
