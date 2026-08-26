@@ -7,7 +7,8 @@ function normalizeRemoteCommand(raw, fallback) {
   if (!raw || !allowedIntents.has(raw.intent)) return fallback;
   const title = typeof raw.title === 'string' && raw.title.trim().length <= 500 ? raw.title.trim() : fallback.title;
   const subject = typeof raw.subject === 'string' && raw.subject.length <= 100 ? raw.subject : fallback.subject;
-  return { ...fallback, intent: raw.intent, title, subject };
+  const intent = raw.intent === 'STUDY_PLANNING' && fallback.intent === INTENTS.CREATE_ASSESSMENT ? fallback.intent : raw.intent;
+  return { ...fallback, intent, title, subject };
 }
 
 export async function parseCaptureCommand(input, now = new Date()) {
