@@ -10,7 +10,16 @@ function normalizeTask(input = {}) {
   if (task.status && !['open', 'completed'].includes(task.status)) throw new Error('Task status is invalid');
   if (task.priority !== undefined && ![1, 2, 3, 4].includes(Number(task.priority))) throw new Error('Task priority is invalid');
   if (task.duration_minutes !== undefined && (Number(task.duration_minutes) < 1 || Number(task.duration_minutes) > 1440)) throw new Error('Task duration is invalid');
+  if (task.related_assessment_id !== undefined && task.related_assessment_id !== null && !/^[0-9a-f-]{36}$/i.test(task.related_assessment_id)) throw new Error('Related assessment id is invalid');
   return task;
+}
+
+function requestBody(request) {
+  if (request.body && typeof request.body === 'object') return request.body;
+  if (typeof request.body === 'string') {
+    try { return JSON.parse(request.body); } catch { return {}; }
+  }
+  return {};
 }
 
 async function findExistingTask(userFilter, task) {
@@ -27,12 +36,13 @@ export default async function handler(request, response) {
   if (auth.error) return auth.error;
   const userFilter = `user_id=eq.${encodeURIComponent(auth.userId)}`;
   try {
+    const body = requestBody(request);
     if (request.method === 'GET') {
       const tasks = await supabaseRequest(`tasks?${userFilter}&select=*&order=due_date.asc,due_time.asc,created_at.asc`);
       return json(response, 200, { tasks });
     }
     if (request.method === 'POST') {
-      const task = normalizeTask(request.body?.task);
+      const task = normalizeTask(body.task);
       await ensureProfile(auth.userId);
       const existing = await findExistingTask(userFilter, task);
       if (existing) return json(response, 200, { task: existing });
@@ -56,7 +66,7 @@ export default async function handler(request, response) {
     const id = request.query?.id;
     if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return json(response, 400, { error: 'A valid task id is required' });
     if (request.method === 'PATCH') {
-      const input = request.body?.task || {};
+      const input = body.task || {};
       const patch = input.title === undefined ? normalizeTask({ title: 'placeholder', ...input }) : normalizeTask(input);
       if (input.title === undefined) delete patch.title;
       const rows = await supabaseRequest(`tasks?id=eq.${encodeURIComponent(id)}&${userFilter}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) });
@@ -68,6 +78,7 @@ export default async function handler(request, response) {
     }
     return json(response, 405, { error: 'Method not allowed' });
   } catch (error) {
+    console.error('Task API operation failed', { status: error.status || 422, message: error.message, code: error.body?.code });
     return json(response, error.status || 422, { error: error.message || 'Task operation failed', details: error.body || undefined });
   }
 }
