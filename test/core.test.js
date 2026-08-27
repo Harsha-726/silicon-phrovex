@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addDays, assessmentIdempotencyKey, expandRecurringTask, findOpenSlot, isOverdue, parseCapture, planStudySessions, rankRecommendations, resolveDatePhrase, resolveDuration, resolveTimePhrase, toDateKey, INTENTS } from '../src/core.js';
+import { addDays, assessmentIdempotencyKey, expandRecurringTask, findOpenSlot, gamificationLevel, isOverdue, parseCapture, planStudySessions, rankRecommendations, recordCompletion, resolveDatePhrase, resolveDuration, resolveTimePhrase, toDateKey, INTENTS } from '../src/core.js';
 
 const fixedNow = new Date(2026, 7, 25, 17, 30);
 
@@ -8,6 +8,8 @@ test('relative dates resolve in the local calendar', () => {
   assert.equal(resolveDatePhrase('tomorrow', fixedNow), '2026-08-26');
   assert.equal(resolveDatePhrase('next Wednesday', fixedNow), '2026-09-02');
   assert.equal(resolveDatePhrase('next Friday', fixedNow), '2026-09-04');
+  assert.equal(resolveDatePhrase('this Friday', fixedNow), '2026-08-28');
+  assert.equal(resolveDatePhrase('Wednesday', fixedNow), '2026-08-26');
   assert.equal(resolveDatePhrase('in three days', fixedNow), '2026-08-28');
 });
 
@@ -29,6 +31,8 @@ test('parser covers task commands and natural durations', () => {
   assert.equal(resolveTimePhrase('meet me at 7:30 pm'), '19:30');
   assert.equal(resolveTimePhrase('meet me at 25:90'), null);
   assert.equal(resolveDuration('for 1.5 hours'), 90);
+  assert.equal(parseCapture('Study every 2 weeks', fixedNow).dueDate, '2026-08-25');
+  assert.equal(parseCapture('when should i study for bio?', fixedNow).intent, INTENTS.QUERY_RECOMMENDATION);
 });
 
 test('overdue is only unfinished work before the current timestamp', () => {
@@ -93,4 +97,29 @@ test('free-time recommendations favor urgency, priority, and fit', () => {
     { id: 'too-long', title: 'Project', status: 'open', dueDate: '2026-08-25', priority: 4, duration: 120 }
   ];
   assert.equal(rankRecommendations(tasks, fixedNow, 45)[0].id, 'urgent');
+});
+
+test('assessment sessions are distributed across the preparation window', () => {
+  const assessment = { id: 'a3', title: 'Chemistry Exam', className: 'Chemistry', dueDate: '2026-09-10', priority: 2 };
+  const sessions = planStudySessions(assessment, [], { preferredStart: '16:30', latestStudyTime: '21:00', sessionLength: 45, sessionsPerAssessment: 3, now: new Date(2026, 7, 25, 12, 0) });
+  assert.deepEqual(sessions.map(session => session.dueDate), ['2026-08-27', '2026-09-03', '2026-09-09']);
+  assert.equal(new Set(sessions.map(session => session.dueDate)).size, 3);
+});
+
+test('custom school days and recurring blocked periods are hard constraints', () => {
+  const now = new Date(2026, 7, 25, 10, 0);
+  assert.equal(findOpenSlot([], '2026-08-29', 45, { now, preferredStart: '09:00', latestStudyTime: '12:00', schoolStart: '08:00', schoolEnd: '10:00', schoolDays: [1, 2, 3, 4, 5], blockedPeriods: [{ weekday: 6, start: '09:00', end: '11:00' }] }), '11:00');
+});
+
+test('completion XP is idempotent and streaks are transparent', () => {
+  const task = { id: 'task-1', type: 'study_session' };
+  const first = recordCompletion({}, task, new Date(2026, 7, 25, 18, 0));
+  const second = recordCompletion(first, task, new Date(2026, 7, 25, 19, 0));
+  const nextDay = recordCompletion(second, { id: 'task-2' }, new Date(2026, 7, 26, 18, 0));
+  assert.equal(first.xp, 12);
+  assert.equal(second.xp, 12);
+  assert.equal(nextDay.xp, 22);
+  assert.equal(nextDay.currentStreak, 2);
+  assert.equal(gamificationLevel(99), 1);
+  assert.equal(gamificationLevel(100), 2);
 });

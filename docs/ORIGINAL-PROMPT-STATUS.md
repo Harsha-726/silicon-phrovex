@@ -15,6 +15,8 @@
 - Durable authenticated profile settings and class/project task labels for remote refreshes.
 - One client capture pipeline that uses the deterministic parser and optionally calls the server Groq parser.
 - Study-preferences onboarding and persisted scheduling defaults.
+- Configurable school start/end times and school days used as hard scheduler boundaries.
+- Idempotent XP awards, completion-day tracking, streaks, and a compact Today progress summary.
 - Calendar/LMS/transcription provider contracts without fake integrations.
 
 ## External deployment prerequisites
@@ -24,4 +26,4 @@
 - Add browser end-to-end coverage against a deployed Clerk/Supabase environment.
 - Implement real Calendar/LMS imports and voice transcription when provider credentials and product requirements are available.
 
-The application foundation and security boundaries are implemented and tested locally. Full production persistence cannot be honestly marked complete until the external database migration and server-only credentials are configured.
+The application foundation and security boundaries are implemented and tested locally. Production persistence still depends on the external Supabase migration and server-only credentials being present in the deployed environment, followed by a browser-level smoke test.

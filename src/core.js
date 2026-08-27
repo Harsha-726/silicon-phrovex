@@ -89,8 +89,9 @@ export function resolveDatePhrase(text, now = new Date()) {
   if (weekday) {
     const target = weekday[1];
     const current = now.getDay();
+    if (/\bthis\s+/.test(lower)) return addDays(today, target - current);
     let delta = (target - current + 7) % 7;
-    if (/\bnext\s+/.test(lower) || delta === 0) delta += 7;
+    if (/\bnext\s+/.test(lower)) delta += 7;
     return addDays(today, delta);
   }
 
@@ -199,15 +200,15 @@ export function parseCapture(input, now = new Date()) {
   const subject = extractSubject(text);
   if (/what do i have|what is on my schedule|show me today/.test(lower) && /today|right now/.test(lower)) return { intent: INTENTS.QUERY_TODAY, raw: text, duration };
   if (/what do i have|what is on my schedule|what is upcoming|what's upcoming|show me/.test(lower) && /upcoming|tomorrow|this week|next week/.test(lower)) return { intent: INTENTS.QUERY_UPCOMING, raw: text, duration };
-  if (/what should i do|what should i study|can i finish/.test(lower) && /right now|now|tonight/.test(lower)) return { intent: INTENTS.QUERY_RECOMMENDATION, raw: text, duration };
-  if (/what should i|what do i have|can i finish|what should i study/.test(lower)) return { intent: INTENTS.QUERY_UPCOMING, raw: text, duration };
+  if (/what should i do|what should i study|can i finish|when should i study|do i have time/.test(lower) && /right now|now|tonight|today|before|this week/.test(lower)) return { intent: INTENTS.QUERY_RECOMMENDATION, raw: text, duration };
+  if (/what should i study|when should i study|what should i do|can i finish/.test(lower)) return { intent: INTENTS.QUERY_RECOMMENDATION, raw: text, duration };
   if (/\bfree\b|available/.test(lower)) return { intent: INTENTS.QUERY_FREE_TIME, raw: text, duration };
   if (/\btest\b|\bexam\b|\bquiz\b|assessment/.test(lower) && date) return { intent: INTENTS.CREATE_ASSESSMENT, title: cleanTitle(text), subject, dueDate: date, dueTime: time, duration: duration || 45, raw: text };
   if (/\bdelete\b|\bremove\b/.test(lower)) return { intent: INTENTS.DELETE_TASK, title: cleanTitle(text), raw: text };
   if (/\bcomplete\b|\bdone\b|\bfinish(?:ed)?\b/.test(lower)) return { intent: INTENTS.COMPLETE_TASK, title: cleanTitle(text), raw: text };
   if (/\bedit\b|\brename\b/.test(lower)) return { intent: INTENTS.EDIT_TASK, title: cleanTitle(text), raw: text };
   if (/move|reschedule/.test(lower)) return { intent: INTENTS.RESCHEDULE_TASK, title: cleanTitle(text), subject, dueDate: date, dueTime: time, raw: text };
-  return { intent: recurrence ? INTENTS.CREATE_RECURRING_TASK : INTENTS.CREATE_TASK, title: cleanTitle(text), subject, dueDate: date || null, dueTime: time, duration: duration || null, recurrence, raw: text };
+  return { intent: recurrence ? INTENTS.CREATE_RECURRING_TASK : INTENTS.CREATE_TASK, title: cleanTitle(text), subject, dueDate: date || (recurrence ? toDateKey(now) : null), dueTime: time, duration: duration || null, recurrence, raw: text };
 }
 
 export function assessmentIdempotencyKey(command) {
@@ -227,11 +228,15 @@ export function findOpenSlot(tasks, dateKey, duration = 45, preferences = {}) {
   const preferredStart = preferences.preferredStart || '16:30';
   const latest = preferences.latestStudyTime || '21:00';
   const now = preferences.now || new Date();
+  const schoolStart = preferences.schoolStart || '08:00';
   const schoolEnd = preferences.schoolEnd || '16:00';
-  const start = Math.max(dateKey === toDateKey(now) ? now.getHours() * 60 + now.getMinutes() + 15 : toMinutes(schoolEnd), toMinutes(preferredStart), toMinutes(schoolEnd));
+  const schoolDays = Array.isArray(preferences.schoolDays) ? preferences.schoolDays : [1, 2, 3, 4, 5];
+  const date = parseDateKey(dateKey);
+  const schoolBlock = schoolDays.includes(date.getDay()) ? [{ start: toMinutes(schoolStart), end: toMinutes(schoolEnd) }] : [];
+  const start = Math.max(dateKey === toDateKey(now) ? now.getHours() * 60 + now.getMinutes() + 15 : 0, toMinutes(preferredStart));
   const end = toMinutes(latest);
-  const fixedBlocks = (preferences.blockedPeriods || []).filter(block => block.date === dateKey).map(block => ({ start: toMinutes(block.start), end: toMinutes(block.end) }));
-  const busy = tasks.filter(task => task.status !== 'completed' && task.dueDate === dateKey && task.dueTime).map(task => ({ start: toMinutes(task.dueTime), end: toMinutes(task.dueTime) + (task.duration || 30) })).concat(fixedBlocks).sort((a, b) => a.start - b.start);
+  const fixedBlocks = (preferences.blockedPeriods || []).filter(block => block.date === dateKey || (block.weekday !== undefined && Number(block.weekday) === date.getDay())).map(block => ({ start: toMinutes(block.start), end: toMinutes(block.end) }));
+  const busy = tasks.filter(task => task.status !== 'completed' && task.dueDate === dateKey && task.dueTime).map(task => ({ start: toMinutes(task.dueTime), end: toMinutes(task.dueTime) + (task.duration || 30) })).concat(schoolBlock, fixedBlocks).sort((a, b) => a.start - b.start);
   for (let cursor = roundToQuarter(start); cursor + duration <= end; cursor += 15) {
     if (cursor < start) continue;
     const overlaps = busy.some(slot => cursor < slot.end && cursor + duration > slot.start);
@@ -249,13 +254,13 @@ export function planStudySessions(assessment, tasks, profile = {}) {
   if (existing.length >= count) return [];
   const now = profile.now || new Date();
   const candidates = [];
-  for (let offset = 1; offset <= 14 && candidates.length < count * 3; offset += 1) {
+  for (let offset = 1; offset <= 14; offset += 1) {
     const date = new Date(due);
     date.setDate(date.getDate() - offset);
     if (date < parseDateKey(toDateKey(now))) continue;
-    candidates.push(toDateKey(date));
+    candidates.unshift(toDateKey(date));
   }
-  const spread = candidates.filter((_, index) => index % 2 === 0).concat(candidates.filter((_, index) => index % 2 === 1));
+  const spread = distributeDates(candidates, count);
   const sessions = [];
   for (const dateKey of spread) {
     if (sessions.length >= count) break;
@@ -268,6 +273,19 @@ export function planStudySessions(assessment, tasks, profile = {}) {
   return sessions;
 }
 
+function distributeDates(candidates, count) {
+  if (count >= candidates.length) return candidates;
+  if (count <= 1) return candidates.length ? [candidates[candidates.length - 1]] : [];
+  const selected = [];
+  const lastIndex = candidates.length - 1;
+  for (let index = 0; index < count; index += 1) {
+    const candidateIndex = Math.round((index * lastIndex) / (count - 1));
+    const date = candidates[candidateIndex];
+    if (date && !selected.includes(date)) selected.push(date);
+  }
+  return selected;
+}
+
 export function rankRecommendations(tasks, now = new Date(), availableMinutes = Infinity) {
   const current = now.getTime();
   return tasks.filter(task => task.status !== 'completed' && (!task.dueDate || (task.duration || 30) <= availableMinutes)).map(task => {
@@ -278,6 +296,34 @@ export function rankRecommendations(tasks, now = new Date(), availableMinutes = 
     const assessmentScore = task.relatedAssessmentId || task.type === 'assessment' ? 20 : 0;
     return { task, score: deadlineScore + priorityScore + assessmentScore };
   }).sort((a, b) => b.score - a.score || taskSort(a.task, b.task)).map(item => item.task);
+}
+
+export function recordCompletion(gamification = {}, task, completedAt = new Date()) {
+  const awarded = { ...(gamification.awardedTaskIds || {}) };
+  const identity = task.occurrenceKey || task.id;
+  if (!identity || awarded[identity]) return { ...gamification, awardedTaskIds: awarded };
+  awarded[identity] = true;
+  const amount = task.type === 'study_session' ? 12 : task.type === 'assessment' ? 15 : 10;
+  const next = { ...gamification, xp: Math.max(0, Number(gamification.xp) || 0) + amount, awardedTaskIds: awarded };
+  return updateStreak(next, completedAt);
+}
+
+export function updateStreak(gamification = {}, completedAt = new Date()) {
+  const dateKey = toDateKey(completedAt);
+  const completedDays = new Set(gamification.completedDays || []);
+  completedDays.add(dateKey);
+  let currentStreak = 0;
+  let cursor = parseDateKey(dateKey);
+  while (completedDays.has(toDateKey(cursor))) {
+    currentStreak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  const longestStreak = Math.max(Number(gamification.longestStreak) || 0, currentStreak);
+  return { ...gamification, currentStreak, longestStreak, completedDays: [...completedDays].sort(), lastCompletionDate: dateKey };
+}
+
+export function gamificationLevel(xp = 0) {
+  return Math.max(1, Math.floor(Math.max(0, Number(xp) || 0) / 100) + 1);
 }
 
 function toMinutes(time) { const [h, m] = time.split(':').map(Number); return h * 60 + m; }
@@ -297,7 +343,7 @@ export const seedState = () => {
       { id: 'seed_test', title: 'Biology Test', description: 'Unit 2 assessment', status: 'open', priority: 3, dueDate: friday, dueTime: null, duration: 60, className: 'Biology', project: null, recurrence: null, relatedAssessmentId: null, source: 'capture', createdAt: now, updatedAt: now, completedAt: null, type: 'assessment' },
       { id: 'seed_english', title: 'English reading', description: '', status: 'completed', priority: 1, dueDate: today, dueTime: null, duration: 30, className: 'English', project: null, recurrence: null, relatedAssessmentId: null, source: 'capture', createdAt: now, updatedAt: now, completedAt: now }
     ],
-    profile: { onboardingComplete: false, preferredStart: '16:30', latestStudyTime: '21:00', sessionLength: 45, sessionsPerAssessment: 3, sessionsPerWeek: 2, methods: ['Review notes'], classPreferences: { Biology: { sessionsPerWeek: 3, sessionLength: 45 }, Mathematics: { sessionsPerWeek: 2, sessionLength: 45 }, English: { sessionsPerWeek: 2, sessionLength: 30 }, Chemistry: { sessionsPerWeek: 2, sessionLength: 45 } } },
+    profile: { onboardingComplete: false, schoolStart: '08:00', schoolEnd: '16:00', schoolDays: [1, 2, 3, 4, 5], preferredStart: '16:30', latestStudyTime: '21:00', sessionLength: 45, sessionsPerAssessment: 3, sessionsPerWeek: 2, methods: ['Review notes'], classPreferences: { Biology: { sessionsPerWeek: 3, sessionLength: 45 }, Mathematics: { sessionsPerWeek: 2, sessionLength: 45 }, English: { sessionsPerWeek: 2, sessionLength: 30 }, Chemistry: { sessionsPerWeek: 2, sessionLength: 45 } }, gamification: { xp: 0, currentStreak: 0, longestStreak: 0, completedDays: [], awardedTaskIds: {} } },
     classes: ['Biology', 'Mathematics', 'English', 'Chemistry'],
     projects: ['Homework', 'VEX Robotics']
   };

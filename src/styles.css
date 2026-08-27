@@ -23,6 +23,15 @@
 .checkbox.priority-3:hover { background:#fff4e8; }
 .checkbox.priority-4:hover { background:#fff1f1; }
 
+.progress-summary { display:flex; gap:10px; margin:-13px 0 28px; }
+.progress-summary > div { min-width:112px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+.progress-summary strong,.progress-summary span { display:block; }
+.progress-summary strong { font:700 13px Manrope; }
+.progress-summary span { color:var(--muted); font-size:10px; margin-top:3px; }
+.weekday-picker { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+.weekday-picker > span { width:100%; color:#66665e; font-size:12px; font-weight:600; }
+.weekday-picker .check-label { padding:6px 8px; }
+
 #onboarding-form fieldset { display:grid; gap:12px; }
 .class-preference-list { display:grid; gap:12px; }
 .class-preference { display:grid; grid-template-columns:minmax(130px,1.1fr) 1fr 1fr; gap:12px; align-items:end; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-soft); }
@@ -33,3 +42,4 @@
 .class-management-row .danger-button { flex:0 0 auto; }
 .class-management { gap:12px; }
 @media (max-width:560px) { .class-preference { grid-template-columns:1fr; align-items:stretch; } .class-preference strong { margin-bottom:2px; } .class-management-row { align-items:stretch; flex-direction:column; } .class-management-row .danger-button { align-self:flex-start; } }
+@media (max-width:560px) { .progress-summary { overflow:auto; } .progress-summary > div { min-width:100px; } }

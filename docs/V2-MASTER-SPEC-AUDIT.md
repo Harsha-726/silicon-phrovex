@@ -8,15 +8,16 @@
 | Date/time | Complete | One date/time module, injected `now` in scheduler tests, invalid-date rejection, local calendar semantics |
 | Parser | Complete | `src/capture.js` entry point plus deterministic intent extraction and shorthand correction |
 | Server Groq | Complete | Authenticated `/api/parse`, server-only `GROQ_API_KEY`, timeout/rate-limit/JSON validation, deterministic fallback |
-| Learning profile | Complete | Onboarding, per-class allocation, methods, session length, time window, Settings editing |
-| Scheduler | Complete | Hard school-hour/blocked-period/conflict/no-past rules, soft priority/deadline ranking, stable identities |
-| Assessment planning | Complete | Assessment plus bounded Study Session tasks, no arbitrary subplans, idempotency guard |
-| Free-time assistant | Complete | Deterministic recommendation ranking after intent parsing |
+| Learning profile | Complete | Onboarding, per-class allocation, methods, session length, configurable school days/hours, time window, Settings editing |
+| Scheduler | Complete | Hard school-hour/blocked-period/conflict/no-past rules, configurable boundaries, distributed sessions, soft priority/deadline ranking, stable identities |
+| Assessment planning | Complete | Assessment plus bounded, distributed Study Session tasks, no arbitrary subplans, idempotency guard |
+| Free-time assistant | Complete | Deterministic recommendation ranking after intent parsing, including duration fit |
 | Calendar | Complete | Unified task/study/fixed-event calendar styling |
 | State/cache | Complete | One authoritative state object, local fallback, remote repository, delete-all path, no duplicate cache layer |
 | Error states | Complete | Parser fallback warnings, local-sync warnings, no-slot messaging, auth/database boundary errors |
 | Polish | Complete | Responsive shell, keyboard capture shortcut, empty states, task drawer, onboarding, settings |
-| Testing | Complete locally | `npm run lint`, `npm test`, `npm run build`; 11 deterministic tests pass |
+| Gamification | Complete locally | Idempotent XP awards, transparent completion days, current/longest streaks, subtle Today summary |
+| Testing | Complete locally | `npm run lint`, `npm test`, `npm run build`; 14 deterministic tests pass |
 | Production audit | Conditional | Groq secret absent from bundle; migration is now present/applied, while server-only Supabase credentials and browser-level deployment verification remain |
 
 ## External deployment actions
