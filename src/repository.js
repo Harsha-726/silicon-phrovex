@@ -13,7 +13,7 @@ function toRow(task) {
     class_name: task.className || null,
     project_name: task.project || null,
     recurrence: task.recurrence || null,
-    related_assessment_id: task.relatedAssessmentId || null,
+    related_assessment_id: isRemoteId(task.relatedAssessmentId) ? task.relatedAssessmentId : null,
     task_type: task.type || 'task',
     source: task.source || 'capture',
     idempotency_key: task.idempotencyKey || null,
@@ -28,9 +28,17 @@ function fromRow(row) {
 
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()), ...(options.headers || {}) } });
-  if (!response.ok) throw new Error(`Remote repository unavailable (${response.status})`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const error = new Error(body.error || `Remote repository unavailable (${response.status})`);
+    error.status = response.status;
+    error.body = body;
+    throw error;
+  }
   return response.status === 204 ? null : response.json();
 }
+
+function isRemoteId(id) { return typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id); }
 
 export function createTaskRepository() {
   return {
@@ -38,8 +46,8 @@ export function createTaskRepository() {
     async loadProfile() { return request('/api/profile'); },
     async saveProfile(profile, classes = []) { return request('/api/profile', { method: 'PATCH', body: JSON.stringify({ profile: { onboarding_complete: Boolean(profile.onboardingComplete), settings: { ...profile, classes } } }) }); },
     async create(task) { const payload = await request('/api/tasks', { method: 'POST', body: JSON.stringify({ task: toRow(task) }) }); return payload.task ? fromRow(payload.task) : task; },
-    async update(task) { const payload = await request(`/api/tasks?id=${encodeURIComponent(task.id)}`, { method: 'PATCH', body: JSON.stringify({ task: toRow(task) }) }); return payload.task ? fromRow(payload.task) : task; },
-    async remove(taskId) { await request(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' }); },
+    async update(task) { if (!isRemoteId(task.id)) return task; const payload = await request(`/api/tasks?id=${encodeURIComponent(task.id)}`, { method: 'PATCH', body: JSON.stringify({ task: toRow(task) }) }); return payload.task ? fromRow(payload.task) : task; },
+    async remove(taskId) { if (!isRemoteId(taskId)) return; await request(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' }); },
     async removeAll() { await request('/api/tasks?all=true', { method: 'DELETE' }); },
     async setOccurrence(taskId, occurrenceDate, completed) { await request('/api/occurrences', { method: completed ? 'POST' : 'DELETE', body: JSON.stringify({ task_id: taskId, occurrence_date: occurrenceDate, completed }) }); }
   };

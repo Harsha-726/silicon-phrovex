@@ -208,15 +208,16 @@ async function handleCapture(input) {
   if (isAssessment) task.type = 'assessment';
   state.tasks.push(task);
   let persistenceWarning = false;
+  let persistenceMessage = '';
   if (repository) {
-    const createdAssessment = await repository.create(task).catch(() => { persistenceWarning = true; return task; });
+    const createdAssessment = await repository.create(task).catch(error => { persistenceWarning = true; persistenceMessage = error.message; return task; });
     Object.assign(task, createdAssessment);
   }
   const sessions = isAssessment ? planStudySessions(task, state.tasks, state.profile) : [];
   state.tasks.push(...sessions);
-  const createdSessions = await Promise.all(sessions.map(item => repository ? repository.create(item).catch(() => { persistenceWarning = true; return item; }) : item));
+  const createdSessions = await Promise.all(sessions.map(item => repository ? repository.create(item).catch(error => { persistenceWarning = true; persistenceMessage ||= error.message; return item; }) : item));
   sessions.forEach((item, index) => Object.assign(item, createdSessions[index]));
-  captureValue = ''; saveState(); view = task.dueDate === today() || !task.dueDate ? 'today' : 'upcoming'; render(); showToast(command.warning || (persistenceWarning ? 'Saved locally. Database sync is unavailable.' : command.intent === INTENTS.CREATE_ASSESSMENT && !sessions.length ? 'Assessment added, but no open study slot was available.' : command.intent === INTENTS.CREATE_ASSESSMENT ? 'Assessment added and study sessions scheduled.' : 'Task added.'));
+  captureValue = ''; saveState(); view = task.dueDate === today() || !task.dueDate ? 'today' : 'upcoming'; render(); showToast(command.warning || (persistenceWarning ? `Saved locally. ${persistenceMessage || 'Database sync is unavailable.'}` : command.intent === INTENTS.CREATE_ASSESSMENT && !sessions.length ? 'Assessment added, but no open study slot was available.' : command.intent === INTENTS.CREATE_ASSESSMENT ? 'Assessment added and study sessions scheduled.' : 'Task added.'));
 }
 
 function findTaskForCommand(title) {
