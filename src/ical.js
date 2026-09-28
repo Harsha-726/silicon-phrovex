@@ -196,8 +196,11 @@ export function repairImportedCalendarClass(existing, incoming) {
   if (!existing) return { task: existing, changed: false };
   const previousAutoClass = existing.calendarClassName || existing.importedClassName || null;
   const existingClass = String(existing.className || '').trim();
+  // Once a user assigns an imported event in the task drawer, that choice is
+  // authoritative. Do not let a later feed refresh reinterpret the event as
+  // unmatched/non-academic or replace it with the feed default.
+  if (existing.calendarClassManuallySet === true) return { task: existing, changed: false };
   const isFeedDefault = incoming?.calendarDefaultClass && existingClass.toLowerCase() === String(incoming.calendarDefaultClass).trim().toLowerCase();
-  if (existing.calendarClassManuallySet === true && !isFeedDefault) return { task: existing, changed: false };
   if (incoming?.calendarClassResolution === 'non_academic' && (isFeedDefault || previousAutoClass && existingClass.toLowerCase() === String(previousAutoClass).trim().toLowerCase())) {
     return {
       task: { ...existing, className: null, calendarClassName: null, calendarClassHint: incoming.calendarClassHint || null, calendarClassResolution: 'non_academic' },

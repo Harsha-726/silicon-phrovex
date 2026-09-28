@@ -97,13 +97,17 @@ test('calendar resync repairs an empty or stale auto-matched class', () => {
 
 test('calendar resync clears a default class from a known non-academic Schoology event', () => {
   const incoming = { className: null, calendarClassName: null, calendarClassResolution: 'non_academic', calendarClassHint: null, calendarDefaultClass: 'Calculus AB AP' };
-  const result = repairImportedCalendarClass({ id: 'club', source: 'calendar', className: 'Calculus AB AP', calendarClassName: 'Calculus AB AP', calendarClassManuallySet: true }, incoming);
+  const manual = repairImportedCalendarClass({ id: 'club', source: 'calendar', className: 'Calculus AB AP', calendarClassName: 'Calculus AB AP', calendarClassManuallySet: true }, incoming);
+  assert.equal(manual.changed, false);
+  assert.equal(manual.task.className, 'Calculus AB AP');
+  assert.equal(manual.task.calendarClassName, 'Calculus AB AP');
+  const result = repairImportedCalendarClass({ id: 'club-auto', source: 'calendar', className: 'Calculus AB AP', calendarClassName: 'Calculus AB AP', calendarClassManuallySet: false }, incoming);
   assert.equal(result.changed, true);
   assert.equal(result.task.className, null);
   assert.equal(result.task.calendarClassName, null);
   const legacy = repairImportedCalendarClass({ id: 'legacy-club', source: 'calendar', className: 'Calculus AB AP', calendarClassManuallySet: true }, incoming);
-  assert.equal(legacy.changed, true);
-  assert.equal(legacy.task.className, null);
+  assert.equal(legacy.changed, false);
+  assert.equal(legacy.task.className, 'Calculus AB AP');
 });
 
 test('calendar resync clears a configured Schoology default when metadata is unmatched', () => {

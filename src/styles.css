@@ -665,3 +665,5 @@ button,input,textarea,select { touch-action:manipulation; }
 .notification-item time { margin-top:6px; color:var(--muted-2); font-size:10px; }
 .notification-empty { padding:18px 5px; }
 @media (max-width:760px) { .notification-panel { width:100vw; } }
+/* Keep Manrope headings sans-serif if the remote font is delayed or blocked. */
+h1,h2,h3,.brand,.brand-mark,.empty-state h3,.calendar-toolbar strong,.class-card h3,.project-card h3,.collection-heading h2,.settings-title h2,.profile-avatar,.drawer-title,.progress-summary strong,.brain-dump-intro h2,.study-intro h2,.feedback-admin-heading h3,.auth-story h2,.task-create-header h2,.project-create-header h2,.streak-celebration-copy strong,.level-up-card > strong,.calendar-day-popup-header h2,.onboarding-card h2,.public-copy h2,.calendar-mobile-day-header strong,.team-card h3,.team-project-heading h2,.team-subproject-filter,.planning-pulse strong,.assistant-card-copy > strong,.notification-panel-header h2 { font-family:Manrope,system-ui,sans-serif; }

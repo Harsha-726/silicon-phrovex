@@ -278,7 +278,8 @@ async function markArtifact(userId, id, patch) {
 
 function usagePayload(row) {
   const today = new Date().toISOString().slice(0, 10);
-  const requestsToday = row?.request_day === today ? Number(row.requests_today || 0) : 0;
+  const requestDay = row?.request_day ? String(row.request_day).slice(0, 10) : today;
+  const requestsToday = requestDay === today ? Number(row.requests_today || 0) : 0;
   return { periodStart: row?.period_start || new Date().toISOString().slice(0, 7) + '-01', basicGenerations: row?.basic_generations || 0, advancedGenerations: row?.advanced_generations || 0, inputTokens: row?.input_tokens || 0, reservedCostCents: row?.reserved_cost_cents || 0, requestsToday };
 }
 
