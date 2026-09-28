@@ -4,6 +4,7 @@ import { handleOccurrences } from './_occurrences.js';
 
 const allowedFields = ['title', 'description', 'status', 'priority', 'due_date', 'due_time', 'scheduled_date', 'scheduled_time', 'scheduling_reason', 'schedule_origin', 'schedule_change_reason', 'schedule_change_message', 'duration_minutes', 'project_id', 'project_name', 'class_id', 'class_name', 'recurrence', 'related_assessment_id', 'task_type', 'assignment_type', 'source', 'idempotency_key', 'scheduling_identity', 'completed_at', 'google_event_id', 'event_reminder_enabled', 'event_reminder_recipient', 'reminder_for_task_id', 'calendar_class_manually_set', 'calendar_class_name', 'calendar_class_hint', 'calendar_default_class', 'calendar_class_resolution'];
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const manualCalendarClassMarker = 'silico:calendar-class-manual';
 
 function normalizeDate(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -140,18 +141,23 @@ function legacyStrictTaskPayload(task) {
 // priority. Preserve the user's numeric priority in an existing legacy
 // metadata column until migration 009 repairs that constraint. This path is
 // intentionally after the normal payloads and disappears once they succeed.
-function legacyPriorityCompatibilityPayload(task) {
+function manualCalendarClassMarkerFor(task) {
+  return String(task.scheduling_reason || '').split('|').includes(manualCalendarClassMarker) ? manualCalendarClassMarker : null;
+}
+
+export function legacyPriorityCompatibilityPayload(task) {
   const payload = legacyStrictTaskPayload(task);
   const priority = Number(task.priority);
   const assignmentMarker = task.assignment_type ? `silico:assignment:${task.assignment_type}` : null;
+  const manualClassMarker = manualCalendarClassMarkerFor(task);
   if (priority > 1) {
     payload.priority = 'medium';
-    payload.scheduling_reason = [`silico:priority:${priority}`, assignmentMarker].filter(Boolean).join('|');
+    payload.scheduling_reason = [`silico:priority:${priority}`, assignmentMarker, manualClassMarker].filter(Boolean).join('|');
   } else {
     payload.priority = 'medium';
     // Clear a marker if a previously high-priority task is changed back to
     // Normal while the legacy schema is still active.
-    payload.scheduling_reason = assignmentMarker;
+    payload.scheduling_reason = [assignmentMarker, manualClassMarker].filter(Boolean).join('|') || null;
   }
   // Keep the newer task metadata in this compatibility attempt. Databases
   // that still require the legacy priority value can nevertheless have the
@@ -165,12 +171,12 @@ function legacyPriorityCompatibilityPayload(task) {
   return Object.fromEntries(fields.filter(field => payload[field] !== undefined).map(field => [field, payload[field]]));
 }
 
-function legacySchemaPriorityPayload(task, options = {}) {
+export function legacySchemaPriorityPayload(task, options = {}) {
   const payload = legacySchemaTaskPayload(task, options);
   if (task.priority !== undefined) {
     const priority = Number(task.priority);
     payload.priority = 'medium';
-    payload.scheduling_reason = [priority > 1 ? `silico:priority:${priority}` : null, task.assignment_type ? `silico:assignment:${task.assignment_type}` : null].filter(Boolean).join('|') || null;
+    payload.scheduling_reason = [priority > 1 ? `silico:priority:${priority}` : null, task.assignment_type ? `silico:assignment:${task.assignment_type}` : null, manualCalendarClassMarkerFor(task)].filter(Boolean).join('|') || null;
   }
   return payload;
 }
