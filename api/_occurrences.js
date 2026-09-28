@@ -3,10 +3,18 @@ import { requireClerkUser, supabaseRequest, json } from './_auth.js';
 function validDate(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value); }
 function validUuid(value) { return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value); }
 
-export default async function handler(request, response) {
+function requestBody(request) {
+  if (request.body && typeof request.body === 'object') return request.body;
+  if (typeof request.body === 'string') {
+    try { return JSON.parse(request.body); } catch { return {}; }
+  }
+  return {};
+}
+
+export async function handleOccurrences(request, response) {
   const auth = await requireClerkUser(request, response);
   if (auth.error) return auth.error;
-  const input = request.body || {};
+  const input = requestBody(request);
   if (!validUuid(input.task_id) || !validDate(input.occurrence_date)) return json(response, 400, { error: 'Invalid occurrence identity' });
   const filter = `user_id=eq.${encodeURIComponent(auth.userId)}&task_id=eq.${encodeURIComponent(input.task_id)}&occurrence_date=eq.${encodeURIComponent(input.occurrence_date)}`;
   try {

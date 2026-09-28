@@ -4,12 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f7f5" />
-    <title>Silico — Make time for what matters</title>
+    <link rel="icon" href="/favicon.svg?v=3" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/favicon.svg?v=3" sizes="180x180" />
+    <title>Silico - A Phrovex Product</title>
   </head>
   <body>
     <div id="app"></div>
-    <script crossorigin="anonymous" src="https://%VITE_CLERK_DOMAIN%/npm/@clerk/ui@1/dist/ui.browser.js"></script>
-    <script crossorigin="anonymous" data-clerk-publishable-key="%VITE_CLERK_PUBLISHABLE_KEY%" src="https://%VITE_CLERK_DOMAIN%/npm/@clerk/clerk-js@6/dist/clerk.browser.js"></script>
+    <!-- Clerk bundles are served through the same-origin proxy. This removes
+         an unpinned third-party script from the page's trust boundary. -->
+    <script src="/__clerk/npm/@clerk/ui@1/dist/ui.browser.js"></script>
+    <script data-clerk-publishable-key="%VITE_CLERK_PUBLISHABLE_KEY%" data-clerk-proxy-url="%VITE_CLERK_PROXY_URL%" src="/__clerk/npm/@clerk/clerk-js@6/dist/clerk.browser.js"></script>
     <script type="module" src="/src/app.js"></script>
   </body>
 </html>

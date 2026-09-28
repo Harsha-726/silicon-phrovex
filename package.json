@@ -7,7 +7,7 @@
     "dev": "vite",
     "lint": "node scripts/lint.mjs",
     "build": "vite build",
-    "test": "node --test test/core.test.js"
+    "test": "node --test test/*.test.js"
   },
   "devDependencies": {
     "vite": "^7.1.3"
