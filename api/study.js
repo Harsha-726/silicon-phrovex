@@ -335,7 +335,7 @@ export default async function handler(request, response) {
       const limits = studyLimits(subscription);
       const materialTitles = new Map((materials || []).map(material => [material.id, material.title]));
       const history = (artifacts || []).map(artifact => ({ ...artifact, material_title: materialTitles.get(artifact.material_id) || 'Study material' }));
-      return json(response, 200, { enabled: boolEnv('STUDY_AI_ENABLED'), materials: materials || [], artifacts: history, usage: usagePayload(usage?.[0]), billing: { plan: limits.plan, status: subscription?.status || 'inactive', currentPeriodEnd: subscription?.current_period_end || null, cancelAtPeriodEnd: Boolean(subscription?.cancel_at_period_end) }, limits });
+      return json(response, 200, { enabled: boolEnv('STUDY_AI_ENABLED'), materials: materials || [], artifacts: history, usage: usagePayload(Array.isArray(usage) ? usage[0] : usage), billing: { plan: limits.plan, status: subscription?.status || 'inactive', currentPeriodEnd: subscription?.current_period_end || null, cancelAtPeriodEnd: Boolean(subscription?.cancel_at_period_end) }, limits });
     }
     if (request.method !== 'POST') return json(response, 405, { error: 'Method not allowed' });
     const subscription = await subscriptionFor(auth.userId);
