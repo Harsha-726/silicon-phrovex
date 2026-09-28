@@ -4,16 +4,21 @@ const assignmentTypePattern = /(?:^|\|)silico:assignment:(study|test|quiz|homewo
 const autoScheduledMarker = 'silico:auto-scheduled';
 const studyDateLockedMarker = 'silico:study-date-locked';
 const explicitExecutionMarker = 'silico:explicit-execution';
+const manualCalendarClassMarker = 'silico:calendar-class-manual';
 function schedulingReasonWithAssignment(task) {
   const marker = `silico:assignment:${task.assignmentType || 'homework'}`;
-  const parts = String(task.schedulingReason || '').split('|').filter(part => part && !part.startsWith('silico:assignment:') && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker);
+  const parts = String(task.schedulingReason || '').split('|').filter(part => part && !part.startsWith('silico:assignment:') && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker && part !== manualCalendarClassMarker);
   if (task.autoScheduled === true) parts.push(autoScheduledMarker);
   if (task.studyDateLocked === true) parts.push(studyDateLockedMarker);
   if (task.explicitExecution === true) parts.push(explicitExecutionMarker);
+  // Keep the user's imported-class override in the long-lived scheduling
+  // metadata too. This survives legacy update fallbacks that do not have the
+  // newer calendar_class_manually_set column yet.
+  if (task.calendarClassManuallySet === true) parts.push(manualCalendarClassMarker);
   return [...parts, marker].join('|');
 }
 
-function toRow(task, includeNulls = true) {
+export function toRow(task, includeNulls = true) {
   const row = {
     ...(task.id && /^[0-9a-f-]{36}$/i.test(task.id) ? { id: task.id } : {}),
     title: task.title,
@@ -55,14 +60,15 @@ function toRow(task, includeNulls = true) {
   return row;
 }
 
-function fromRow(row) {
+export function fromRow(row) {
   const rawSchedulingReason = typeof row.scheduling_reason === 'string' ? row.scheduling_reason : '';
   const assignmentMarker = rawSchedulingReason.match(assignmentTypePattern)?.[1] || null;
   const autoScheduled = rawSchedulingReason.split('|').includes(autoScheduledMarker);
   const studyDateLocked = rawSchedulingReason.split('|').includes(studyDateLockedMarker);
   const explicitExecution = rawSchedulingReason.split('|').includes(explicitExecutionMarker);
+  const manualCalendarClass = rawSchedulingReason.split('|').includes(manualCalendarClassMarker);
   const priorityMarker = rawSchedulingReason.match(/^silico:priority:([1-4])(?:\|silico:assignment:[a-z_]+)?$/)?.[1] || null;
-  const schedulingReason = rawSchedulingReason.split('|').filter(part => !part.startsWith('silico:assignment:') && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker).join('|') || null;
+  const schedulingReason = rawSchedulingReason.split('|').filter(part => !part.startsWith('silico:assignment:') && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker && part !== manualCalendarClassMarker).join('|') || null;
   const priority = priorityMarker ? Number(priorityMarker) : typeof row.priority === 'number' ? row.priority : ({ low: 1, medium: 1, high: 2, urgent: 3, critical: 4 })[String(row.priority).toLowerCase()] || Number(row.priority) || 1;
   const status = row.status === 'completed' ? 'completed' : 'open';
   const dueDate = typeof row.due_date === 'string' ? row.due_date.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || row.due_date : row.due_date;
@@ -76,7 +82,7 @@ function fromRow(row) {
   const scheduleOrigin = ['USER_SCHEDULED', 'SILICO_SCHEDULED', 'UNSCHEDULED'].includes(row.schedule_origin)
     ? row.schedule_origin
     : autoScheduled ? 'SILICO_SCHEDULED' : scheduledDate || scheduledTime ? 'USER_SCHEDULED' : 'UNSCHEDULED';
-  return { ...row, priority, status, duration, dueDate, dueTime, scheduledDate, scheduledTime, schedulingReason, scheduleOrigin, scheduleChangeReason: row.schedule_change_reason || null, scheduleChangeMessage: row.schedule_change_message || null, autoScheduled, studyDateLocked, explicitExecution, relatedAssessmentId: row.related_assessment_id, type: row.task_type, assignmentType: assignmentMarker || row.assignment_type || null, assignmentTypeExplicit: Boolean(assignmentMarker || (row.assignment_type && row.assignment_type !== 'other')), idempotencyKey: row.idempotency_key, schedulingIdentity: row.scheduling_identity, completedAt: row.completed_at, className: row.class_name || null, project: row.project_name || null, googleEventId: row.google_event_id || null, eventReminderEnabled: row.event_reminder_enabled === true, eventReminderRecipient: row.event_reminder_recipient || '', reminderForTaskId: row.reminder_for_task_id || null, calendarClassManuallySet: row.calendar_class_manually_set === true, calendarClassName: row.calendar_class_name || null, calendarClassHint: row.calendar_class_hint || null, calendarDefaultClass: row.calendar_default_class || null, calendarClassResolution: row.calendar_class_resolution || null };
+  return { ...row, priority, status, duration, dueDate, dueTime, scheduledDate, scheduledTime, schedulingReason, scheduleOrigin, scheduleChangeReason: row.schedule_change_reason || null, scheduleChangeMessage: row.schedule_change_message || null, autoScheduled, studyDateLocked, explicitExecution, relatedAssessmentId: row.related_assessment_id, type: row.task_type, assignmentType: assignmentMarker || row.assignment_type || null, assignmentTypeExplicit: Boolean(assignmentMarker || (row.assignment_type && row.assignment_type !== 'other')), idempotencyKey: row.idempotency_key, schedulingIdentity: row.scheduling_identity, completedAt: row.completed_at, className: row.class_name || null, project: row.project_name || null, googleEventId: row.google_event_id || null, eventReminderEnabled: row.event_reminder_enabled === true, eventReminderRecipient: row.event_reminder_recipient || '', reminderForTaskId: row.reminder_for_task_id || null, calendarClassManuallySet: row.calendar_class_manually_set === true || manualCalendarClass, calendarClassName: row.calendar_class_name || null, calendarClassHint: row.calendar_class_hint || null, calendarDefaultClass: row.calendar_default_class || null, calendarClassResolution: row.calendar_class_resolution || null };
 }
 
 function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }

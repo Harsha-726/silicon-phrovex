@@ -283,6 +283,25 @@ function usagePayload(row) {
   return { periodStart: row?.period_start || new Date().toISOString().slice(0, 7) + '-01', basicGenerations: row?.basic_generations || 0, advancedGenerations: row?.advanced_generations || 0, inputTokens: row?.input_tokens || 0, reservedCostCents: row?.reserved_cost_cents || 0, requestsToday };
 }
 
+function currentStudyPeriod() {
+  const month = new Date();
+  month.setUTCDate(1);
+  return month.toISOString().slice(0, 10);
+}
+
+// Keep already-deployed databases correct even before the latest reservation
+// function migration is applied. The stale-day filter makes this safe when
+// two requests cross the daily boundary at the same time.
+async function resetDailyStudyUsage(userId, period = currentStudyPeriod()) {
+  const today = new Date().toISOString().slice(0, 10);
+  const filter = `user_id=eq.${encodeURIComponent(userId)}&period_start=eq.${period}`;
+  const rows = await supabaseRequest(`study_usage_monthly?${filter}&select=*&limit=1`);
+  const row = rows?.[0];
+  if (!row || String(row.request_day || '').slice(0, 10) === today) return row;
+  const updated = await supabaseRequest(`study_usage_monthly?${filter}&request_day=neq.${today}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ requests_today: 0, request_day: today }) });
+  return updated?.[0] || { ...row, requests_today: 0, request_day: today };
+}
+
 async function releaseStudyUsage(userId, artifactId, generationKind, inputTokens, estimatedCostCents) {
   return supabaseRequest('rpc/release_study_usage', {
     method: 'POST',
@@ -302,9 +321,7 @@ export default async function handler(request, response) {
   response.setHeader('Cache-Control', 'no-store');
   try {
     if (request.method === 'GET') {
-      const month = new Date();
-      month.setUTCDate(1);
-      const period = month.toISOString().slice(0, 10);
+      const period = currentStudyPeriod();
       const subscription = await subscriptionFor(auth.userId);
       const materialId = request.query?.material_id;
       const materialIdFilter = materialId && /^[0-9a-f-]{36}$/i.test(materialId) ? `&id=eq.${encodeURIComponent(materialId)}` : '';
@@ -312,7 +329,7 @@ export default async function handler(request, response) {
       const artifactMaterialFilter = materialIdFilter ? `&material_id=eq.${encodeURIComponent(materialId)}` : '';
       const [materials, usage, artifacts] = await Promise.all([
         supabaseRequest(`study_materials?user_id=eq.${encodeURIComponent(auth.userId)}${materialIdFilter}&select=${materialSelect}&order=created_at.desc&limit=50`),
-        supabaseRequest(`study_usage_monthly?user_id=eq.${encodeURIComponent(auth.userId)}&period_start=eq.${period}&select=*&limit=1`),
+        resetDailyStudyUsage(auth.userId, period),
         supabaseRequest(`study_artifacts?user_id=eq.${encodeURIComponent(auth.userId)}${artifactMaterialFilter}&status=eq.completed&select=id,material_id,format,model,options,status,content_json,created_at,updated_at&order=created_at.desc&limit=100`)
       ]);
       const limits = studyLimits(subscription);
@@ -330,6 +347,7 @@ export default async function handler(request, response) {
     const maxInputTokens = limits.monthlyInputTokens;
     if (parsed.inputTokens > maxInputTokens) return json(response, 413, { error: `This material is too large. The current limit is ${maxInputTokens.toLocaleString()} estimated tokens.` });
     await ensureProfile(auth.userId);
+    await resetDailyStudyUsage(auth.userId);
     const contentHash = hash(parsed.content);
     const material = await findMaterial(auth.userId, contentHash) || (await supabaseRequest('study_materials', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' }, body: JSON.stringify([{ user_id: auth.userId, title: parsed.title, source_type: parsed.sourceType, content: parsed.content, content_hash: contentHash, token_count: parsed.inputTokens }]) }))[0];
     // Grounded artifacts have a different contract (source refs/evidence) than

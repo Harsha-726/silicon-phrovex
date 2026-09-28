@@ -1,7 +1,7 @@
-const clerkKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const clerkKey = import.meta.env?.VITE_CLERK_PUBLISHABLE_KEY;
+const clerkProxyUrl = import.meta.env?.VITE_CLERK_PROXY_URL;
+const supabaseUrl = import.meta.env?.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env?.VITE_SUPABASE_ANON_KEY;
 
 // Clerk's browser SDK is loaded once in index.html. Keeping this boundary tiny
 // means the core app does not know anything about the auth provider.
