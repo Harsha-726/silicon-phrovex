@@ -505,6 +505,10 @@ function markTaskDeleted(id, task = null) {
   state.deletedTaskIds = [...localDeletedTaskIds];
   state.deletedTaskIdentities = [...localDeletedTaskIdentities];
 }
+function markTaskDeletedIdOnly(id) {
+  if (typeof id === 'string' && id.trim()) localDeletedTaskIds.add(id);
+  state.deletedTaskIds = [...localDeletedTaskIds];
+}
 function markTaskSyncRetry(task) { if (task) { task.syncRetryAfter = new Date(Date.now() + 5 * 60 * 1000).toISOString(); saveState(); } }
 function persistCreatedTask(task) { return taskPersistence.persist(task); }
 function normalizeClassName(value) { return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 80); }
@@ -4361,7 +4365,10 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
       if (/^task_[0-9a-f_-]+$/i.test(id) || localUpdated > remoteUpdated) byId.set(id, localTask);
     }
     const mergedRecords = deduplicateTaskRecords([...byId.values()]);
-    mergedRecords.duplicates.forEach(task => markTaskDeleted(task.id));
+    // A duplicate row shares the winner's provider identity. Tombstoning the
+    // identity here would filter the surviving row on the next sync and make
+    // the task disappear. Only the losing database ID is deleted.
+    mergedRecords.duplicates.forEach(task => markTaskDeletedIdOnly(task.id));
     await Promise.all(mergedRecords.duplicates.filter(task => isRemoteTaskId(task.id)).map(task => repository.remove(task.id).catch(() => {})));
     state.tasks = mergedRecords.tasks.map((task, index) => normalizeTaskRecord(task, index)).filter(Boolean);
     // Imported one-time events are lifecycle-bound to their calendar date.

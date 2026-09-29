@@ -164,6 +164,16 @@ export function createTaskRepository() {
   };
   return {
     async load() { const payload = await request('/api/tasks'); return (payload.tasks || []).map(fromRow); },
+    async findByIdentity(task) {
+      for (const field of ['idempotency_key', 'scheduling_identity']) {
+        const value = task?.[field === 'idempotency_key' ? 'idempotencyKey' : 'schedulingIdentity'];
+        if (!value) continue;
+        const payload = await request(`/api/tasks?${field}=${encodeURIComponent(value)}`);
+        const row = payload?.tasks?.[0];
+        if (row) return fromRow(row);
+      }
+      return null;
+    },
     async loadProfile() { return request('/api/profile'); },
     async loadStudy() { return request('/api/study'); },
     async loadStudyMaterial(id) { return request(`/api/study?material_id=${encodeURIComponent(id)}`); },
@@ -199,7 +209,28 @@ export function createTaskRepository() {
     async updateTeamTask(teamProjectId, teamTaskId, task) { const payload = await request('/api/team-projects', { method: 'POST', body: JSON.stringify({ action: 'update_task', team_project_id: teamProjectId, team_task_id: teamTaskId, task }) }); return payload.task; },
     async toggleTeamTask(teamProjectId, teamTaskId, completed) { return request('/api/team-projects', { method: 'POST', body: JSON.stringify({ action: 'toggle_task', team_project_id: teamProjectId, team_task_id: teamTaskId, completed }) }); },
     async saveTeamAvailability(teamProjectId, weekStart, slots) { return request('/api/team-projects', { method: 'POST', body: JSON.stringify({ action: 'save_availability', team_project_id: teamProjectId, week_start: weekStart, slots }) }); },
-    async create(task) { const payload = await request('/api/tasks', { method: 'POST', body: JSON.stringify({ task: toRow(task, false) }) }); if (!payload?.task || !isRemoteId(payload.task.id)) throw new Error('Task was not confirmed by the database'); return fromRow(payload.task); },
+    async create(task) {
+      try {
+        const payload = await request('/api/tasks', { method: 'POST', body: JSON.stringify({ task: toRow(task, false) }) });
+        if (!payload?.task || !isRemoteId(payload.task.id)) throw new Error('Task was not confirmed by the database');
+        return fromRow(payload.task);
+      } catch (error) {
+        // A POST can commit remotely and still time out before the response
+        // reaches the browser. Reconcile that ambiguous result by identity
+        // before exposing a local-only task to the rest of the app. A 409 can
+        // also mean the unique identity was committed by a concurrent POST.
+        const retryableAmbiguous = error?.status === 409 || error?.status >= 500 || !error?.status || error?.name === 'TimeoutError' || error?.name === 'AbortError';
+        if (!retryableAmbiguous) throw error;
+        try {
+          const existing = await this.findByIdentity(task);
+          if (existing) return existing;
+        } catch {
+          // Preserve the original POST error; the normal local retry path will
+          // try the identity lookup again during the next remote sync.
+        }
+        throw error;
+      }
+    },
     async update(task) { if (!isRemoteId(task.id)) return task; return updateTaskInOrder(task); },
     async remove(taskId) { if (!isRemoteId(taskId)) return; await request(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' }); },
     async removeAll(before = null) { return request(`/api/tasks?all=true${before ? `&before=${encodeURIComponent(before)}` : ''}`, { method: 'DELETE' }); },

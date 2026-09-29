@@ -212,12 +212,20 @@ function legacyTaskPayloads(task) {
   ];
 }
 
+export function taskStatusMatches(row, status) {
+  if (!status) return true;
+  return status === 'completed' ? row?.status === 'completed' : row?.status !== 'completed';
+}
+
 async function findExistingTask(userFilter, task, options = {}) {
-  const statusFilter = options.status ? `&status=eq.${encodeURIComponent(options.status)}` : '';
   for (const field of ['idempotency_key', 'scheduling_identity']) {
     if (!task[field]) continue;
-    const rows = await supabaseRequest(`tasks?${userFilter}${statusFilter}&${field}=eq.${encodeURIComponent(task[field])}&select=*&limit=1`);
-    if (rows?.[0]) return rows[0];
+    // Do not push the status predicate into PostgREST. Older task schemas use
+    // values such as `todo`; filtering for `open` misses the existing row and
+    // turns an idempotent retry into a unique-constraint failure.
+    const rows = await supabaseRequest(`tasks?${userFilter}&${field}=eq.${encodeURIComponent(task[field])}&select=*&limit=20`);
+    const matching = rows?.find(row => taskStatusMatches(row, options.status));
+    if (matching) return matching;
   }
   return null;
 }
@@ -238,7 +246,11 @@ export default async function handler(request, response) {
     if (request.method === 'GET') {
       // The client sorts task rows itself. Avoid ordering by legacy columns
       // that may not exist until all schema repairs have been applied.
-      const tasks = await supabaseRequest(`tasks?${userFilter}&select=*`);
+      const identityField = ['idempotency_key', 'scheduling_identity'].find(field => typeof request.query?.[field] === 'string' || typeof requestUrl.searchParams.get(field) === 'string');
+      const identityValue = identityField ? request.query?.[identityField] || requestUrl.searchParams.get(identityField) : null;
+      if (identityField && (!identityValue || identityValue.length > 255)) return json(response, 400, { error: 'Task identity is invalid' });
+      const identityFilter = identityField ? `&${identityField}=eq.${encodeURIComponent(identityValue)}` : '';
+      const tasks = await supabaseRequest(`tasks?${userFilter}${identityFilter}&select=*`);
       return json(response, 200, { tasks });
     }
     if (request.method === 'POST') {
