@@ -4,6 +4,7 @@ import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEv
 import { clerk, clerkLoadOptions, platformStatus } from './platform.js';
 import { createTaskRepository } from './repository.js';
 import { createTaskPersistenceCoordinator } from './task-persistence.js';
+import { deduplicateTaskRecords, taskIdentity } from './task-merge.js';
 import './styles.css';
 
 const STORAGE_KEY = 'silico.state.v1';
@@ -259,51 +260,6 @@ function saveState() { state.deletedTaskIds = [...localDeletedTaskIds]; state.de
 function cloneState(value) { return JSON.parse(JSON.stringify(value)); }
 function stateSnapshot() { return cloneState(state); }
 function isRemoteTaskId(id) { return typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id); }
-function taskIdentity(task) {
-  const identity = task?.idempotencyKey || task?.schedulingIdentity || null;
-  if (!identity) return null;
-  const raw = String(identity);
-  // Early Schoology imports used ical:<uid>; current feed-scoped imports use
-  // ical:schoology:<uid>. Give those forms one canonical identity while
-  // keeping Todoist/file feed identities isolated.
-  if (raw.startsWith('ical:')) {
-    const parts = raw.split(':');
-    if (parts.length === 2 || parts[1] === 'schoology') return `calendar:schoology:${parts.at(-1)}`;
-    return `calendar:${parts[1]}:${parts.slice(2).join(':')}`;
-  }
-  return raw;
-}
-
-// A provider/capture identity is the logical task key. Database IDs are only
-// row identities, so merging solely by row ID lets an old and a newly-imported
-// copy of the same event coexist. Keep the newest meaningful record and make
-// the losing rows part of the normal deletion/tombstone path.
-function preferTaskRecord(left, right) {
-  const leftTime = taskSyncTimestamp(left);
-  const rightTime = taskSyncTimestamp(right);
-  if (leftTime !== rightTime) return leftTime > rightTime ? left : right;
-  if (Boolean(left.status === 'completed') !== Boolean(right.status === 'completed')) return left.status === 'completed' ? left : right;
-  if (isRemoteTaskId(left.id) !== isRemoteTaskId(right.id)) return isRemoteTaskId(left.id) ? left : right;
-  return String(left.id || '').localeCompare(String(right.id || '')) <= 0 ? left : right;
-}
-
-function deduplicateTaskRecords(tasks) {
-  const owners = new Map();
-  const duplicates = [];
-  for (const task of tasks) {
-    const identity = taskIdentity(task);
-    if (!identity) continue;
-    const previous = owners.get(identity);
-    if (!previous) { owners.set(identity, task); continue; }
-    const winner = preferTaskRecord(previous, task);
-    const loser = winner === previous ? task : previous;
-    owners.set(identity, winner);
-    duplicates.push(loser);
-  }
-  const duplicateIds = new Set(duplicates.map(task => task.id));
-  return { tasks: tasks.filter(task => !duplicateIds.has(task.id)), duplicates };
-}
-
 function offerUndo(message, previousState = null) {
   if (!previousState) { showToast(message); return; }
   const token = uid('undo');

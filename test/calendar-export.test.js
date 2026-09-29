@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activeUserForToken, buildCalendar, escapeIcsText, exportableTask, recurrenceRule } from '../api/calendar-export.js';
 import { filterCalendarEvents, isPastImportedOneTimeTask, preserveImportedCalendarTask, repairImportedCalendarClass } from '../src/ical.js';
+import { deduplicateTaskRecords } from '../src/task-merge.js';
 
 const baseTask = (overrides = {}) => ({
   id: '11111111-1111-4111-8111-111111111111',
@@ -31,6 +32,19 @@ test('past one-time calendar imports are skipped and marked for deletion', () =>
 test('a manually moved imported event is evaluated by its execution date', () => {
   assert.equal(isPastImportedOneTimeTask({ source: 'calendar', dueDate: '2026-08-28', scheduledDate: '2026-09-03' }, '2026-09-04'), true);
   assert.equal(isPastImportedOneTimeTask({ source: 'calendar', dueDate: '2026-08-28', scheduledDate: '2026-09-05' }, '2026-09-04'), false);
+});
+
+test('completed imported events are retained after their feed date passes', () => {
+  assert.equal(isPastImportedOneTimeTask({ source: 'calendar', status: 'completed', dueDate: '2026-08-28' }, '2026-08-29'), false);
+  assert.equal(isPastImportedOneTimeTask({ source: 'calendar', status: 'open', dueDate: '2026-08-28' }, '2026-08-29'), true);
+});
+
+test('completed imported rows beat newer open legacy duplicates', () => {
+  const completed = { id: '11111111-1111-4111-8111-111111111111', source: 'calendar', status: 'completed', idempotencyKey: 'ical:school-event-1', updatedAt: '2026-09-28T16:00:00.000Z' };
+  const duplicate = { id: '22222222-2222-4222-8222-222222222222', source: 'calendar', status: 'open', idempotencyKey: 'ical:schoology:school-event-1', updatedAt: '2026-09-29T08:00:00.000Z' };
+  const result = deduplicateTaskRecords([completed, duplicate]);
+  assert.deepEqual(result.tasks, [completed]);
+  assert.deepEqual(result.duplicates, [duplicate]);
 });
 
 test('ICS text escaping protects commas, semicolons, backslashes, and newlines', () => {

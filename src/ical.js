@@ -177,7 +177,10 @@ export function isPastImportedOneTimeTask(task, todayKey = new Date().toISOStrin
   // already moved their execution date. Use the execution date when it is
   // present so a valid user move is not treated as a stale feed occurrence.
   const executionDate = task?.scheduledDate || task?.dueDate;
-  return Boolean((task?.source === 'calendar' || String(task?.idempotencyKey || '').startsWith('ical:')) && executionDate && executionDate < todayKey && !task.recurrence);
+  // Completed imported events are historical user work, not stale feed rows.
+  // Removing them makes another device/feed refresh recreate the same event as
+  // open because the provider still publishes it.
+  return Boolean(task?.status !== 'completed' && (task?.source === 'calendar' || String(task?.idempotencyKey || '').startsWith('ical:')) && executionDate && executionDate < todayKey && !task.recurrence);
 }
 
 // Feed data establishes an imported task once. After that, the task in Silico
