@@ -3,6 +3,7 @@ import { parseCaptureCommands } from './capture.js';
 import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEvent, isPastImportedOneTimeTask, parseICal, preserveImportedCalendarTask, repairImportedCalendarClass } from './ical.js';
 import { clerk, clerkLoadOptions, platformStatus } from './platform.js';
 import { createTaskRepository } from './repository.js';
+import { createTaskPersistenceCoordinator } from './task-persistence.js';
 import './styles.css';
 
 const STORAGE_KEY = 'silico.state.v1';
@@ -12,6 +13,7 @@ const teamsEnabled = true;
 let currentUser = null;
 let state = seedState();
 let repository = null;
+const taskPersistence = createTaskPersistenceCoordinator(task => repository?.create(task) || Promise.resolve(task));
 const views = new Set(['today', 'upcoming', 'calendar', 'inbox', 'brain-dump', 'study', 'completed', 'classes', 'projects', 'teams', 'settings', 'feedback-admin']);
 let view = views.has(location.hash.slice(1)) ? location.hash.slice(1) : 'today';
 let selectedTaskId = null;
@@ -396,7 +398,7 @@ async function reconcileUndoState(afterState, desiredState) {
       continue;
     }
     const payload = { ...task, relatedAssessmentId: idMap.get(task.relatedAssessmentId) || task.relatedAssessmentId };
-    const restored = await repository.create(payload);
+    const restored = await persistCreatedTask(payload);
     const oldId = task.id;
     Object.assign(task, restored);
     idMap.set(oldId, task.id);
@@ -548,6 +550,7 @@ function markTaskDeleted(id, task = null) {
   state.deletedTaskIdentities = [...localDeletedTaskIdentities];
 }
 function markTaskSyncRetry(task) { if (task) { task.syncRetryAfter = new Date(Date.now() + 5 * 60 * 1000).toISOString(); saveState(); } }
+function persistCreatedTask(task) { return taskPersistence.persist(task); }
 function normalizeClassName(value) { return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 80); }
 function collectOnboardingClassPreferences() {
   state.profile.classPreferences ||= {};
@@ -771,12 +774,15 @@ async function createTaskFromOverlay(form, close) {
       const recoveredSessions = replanAssessmentWork({ persist: false });
       const planningChanges = [...new Map([...planned, ...explicitReflow, ...recoveredSessions].map(item => [item.id, item])).values()];
       if (repository && planningChanges.length) await Promise.all(planningChanges.filter(item => isRemoteTaskId(item.id)).map(item => repository.update(item).catch(() => { markTaskSyncRetry(item); })));
-      if (repository) await repository.update(result.task).catch(() => { markTaskSyncRetry(result.task); });
+      // createTaskFromCommand already persisted all form fields in its POST.
+      // Only planner/reflow mutations belong in the update batch above; an
+      // unconditional PATCH here made every Q/add-task submission wait for a
+      // redundant second network round trip.
     }
     saveState();
     close();
     render();
-    offerUndo('Task added.', previousState);
+    offerUndo(result.persistenceWarning ? 'Task saved locally; syncing will retry.' : 'Task added.', previousState);
   } catch (error) {
     showToast(error.message || 'Could not add that task.');
   } finally {
@@ -832,7 +838,7 @@ function replanAssessmentWork({ persist = false } = {}) {
     if (repository && created.length) {
       Promise.all(created.map(async task => {
         try {
-          const saved = await repository.create(task);
+          const saved = await persistCreatedTask(task);
           if (saved) Object.assign(task, saved);
           delete task.syncRetryAfter;
           saveState();
@@ -3328,7 +3334,7 @@ async function copyTask(id) {
   let synced = true;
   if (repository) {
     try {
-      const saved = await repository.create(copy);
+      const saved = await persistCreatedTask(copy);
       if (saved) Object.assign(copy, saved);
     } catch {
       synced = false;
@@ -3353,7 +3359,7 @@ async function createBrainDumpTask(event) {
   addAppNotification({ type: 'task-created', task, title: 'Moment captured', body: task.title });
   if (repository) {
     try {
-      const savedTask = await repository.create(task);
+      const savedTask = await persistCreatedTask(task);
       Object.assign(task, savedTask);
       delete task.syncRetryAfter;
     } catch {
@@ -3426,7 +3432,7 @@ async function createStudyPlanFromCommand(command, metadata = {}) {
   let persistenceWarning = false;
   if (repository) {
     await Promise.all(sessions.map(async session => {
-      try { const saved = await repository.create(session); Object.assign(session, saved); } catch { persistenceWarning = true; markTaskSyncRetry(session); }
+      try { const saved = await persistCreatedTask(session); Object.assign(session, saved); } catch { persistenceWarning = true; markTaskSyncRetry(session); }
     }));
   }
   return { studyPlan: true, task: assessment || null, sessions, persistenceWarning, command };
@@ -3496,7 +3502,7 @@ async function createTaskFromCommand(command, metadata = {}) {
   let persistenceWarning = false;
   let persistenceMessage = '';
   if (repository) {
-    const createdTask = await repository.create(task).catch(error => { persistenceWarning = true; persistenceMessage = error.message; markTaskSyncRetry(task); return task; });
+    const createdTask = await persistCreatedTask(task).catch(error => { persistenceWarning = true; persistenceMessage = error.message; markTaskSyncRetry(task); return task; });
     Object.assign(task, createdTask);
     if (!persistenceWarning) delete task.syncRetryAfter;
   }
@@ -3519,7 +3525,7 @@ async function createTaskFromCommand(command, metadata = {}) {
       sessions = [...sessions, ...recovery.created];
     }
   }
-  const createdSessions = await Promise.all(sessions.map(item => repository ? repository.create(item).catch(error => { persistenceWarning = true; persistenceMessage ||= error.message; markTaskSyncRetry(item); return item; }) : item));
+  const createdSessions = await Promise.all(sessions.map(item => repository ? persistCreatedTask(item).catch(error => { persistenceWarning = true; persistenceMessage ||= error.message; markTaskSyncRetry(item); return item; }) : item));
   sessions.forEach((item, index) => Object.assign(item, createdSessions[index]));
   if (task.type === 'fixed_event' || task.dueTime) {
     const moved = rebalanceStudySessions();
@@ -4071,7 +4077,7 @@ async function handleCalendarImport(event) {
     let importMessage = `${stale.removed ? `Removed ${stale.removed} past imported ${stale.removed === 1 ? 'event' : 'events'}. ` : ''}Imported ${imported.length} calendar ${imported.length === 1 ? 'event' : 'events'}.`;
     if (stale.failed) importMessage += ` ${stale.failed} past imported ${stale.failed === 1 ? 'event could' : 'events could'} not be deleted yet.`;
     if (repository) {
-      const results = await Promise.all(imported.map(task => repository.create(task).catch(error => { markTaskSyncRetry(task); return null; })));
+      const results = await Promise.all(imported.map(task => persistCreatedTask(task).catch(error => { markTaskSyncRetry(task); return null; })));
       const failed = results.filter(result => !result).length;
       results.forEach((result, index) => { if (result) Object.assign(imported[index], result); });
       saveState();
@@ -4346,7 +4352,7 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
     // created by older app versions. Retry these immediately so legacy
     // backoff timestamps cannot strand them on one device.
     const pendingLocalTasks = state.tasks
-      .filter(task => !isRemoteTaskId(task.id) && !localRecoveryAttempts.has(task.id))
+      .filter(task => !isRemoteTaskId(task.id) && !localRecoveryAttempts.has(task.id) && !taskPersistence.hasPending(task.id))
       .sort((a, b) => Number(b.type === 'assessment') - Number(a.type === 'assessment'));
     const recoveredTaskIds = new Map();
     const recoveredTasks = [];
@@ -4354,7 +4360,7 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
       localRecoveryAttempts.add(localTask.id);
       const payload = { ...localTask, relatedAssessmentId: recoveredTaskIds.get(localTask.relatedAssessmentId) || localTask.relatedAssessmentId };
       try {
-        const recovered = await repository.create(payload);
+        const recovered = await persistCreatedTask(payload);
         delete localTask.syncRetryAfter;
         recoveredTaskIds.set(localTask.id, recovered.id);
         recoveredTasks.push(recovered);
