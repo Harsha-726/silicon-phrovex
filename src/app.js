@@ -64,6 +64,7 @@ let undoBusy = false;
 let activeToast = null;
 let notificationsOpen = false;
 let notificationWorkerPromise = null;
+let unsavedFormInput = false;
 let lastPlannerToastKey = '';
 let remoteSyncPromise = null;
 let localScheduleMutationVersion = 0;
@@ -1007,7 +1008,9 @@ function renderBackgroundState() {
   // A sync must never replace the task drawer while a user is editing it.
   // Date/time pickers can temporarily move focus away from the input, so the
   // drawer itself is the reliable boundary rather than activeElement alone.
-  if (isTaskDrawerOpen() || isEditingControl()) {
+  // A form can also lose focus while it contains unsaved text. Rebuilding it
+  // from state at that point silently restores the old value.
+  if (isTaskDrawerOpen() || isEditingControl() || unsavedFormInput) {
     backgroundRenderPending = true;
     return;
   }
@@ -1018,7 +1021,7 @@ function renderBackgroundState() {
 }
 
 function flushBackgroundRender() {
-  if (backgroundRenderPending && !isEditingControl()) renderBackgroundState();
+  if (backgroundRenderPending && !isEditingControl() && !unsavedFormInput) renderBackgroundState();
 }
 
 function render() {
@@ -1074,6 +1077,7 @@ function render() {
     if (input) input.value = state.profile.displayName || '';
   }
   bindEvents();
+  unsavedFormInput = false;
 }
 
 function navItem(key, label, icon, count) { const motionStyle = key === 'study' ? ` style="--study-sweep-delay:-${Math.round((performance.now() - STUDY_MOTION_EPOCH) % STUDY_MOTION_DURATION_MS)}ms"` : ''; return `<button class="nav-item ${view === key ? 'active' : ''} ${key === 'study' ? 'study-nav-item' : ''}" data-view="${key}"${motionStyle}><span class="nav-icon ${key === 'study' ? 'study-nav-icon' : ''}">${svgIcon(icon)}</span><span>${label}</span>${count ? `<span class="nav-count">${count}</span>` : ''}</button>`; }
@@ -4357,6 +4361,12 @@ window.addEventListener('keydown', event => {
   if (event.key === 'Escape' && isSidebarOpen) { isSidebarOpen = false; render(); return; }
   if (event.key === 'Escape' && selectedTaskId) { selectedTaskId = null; render(); }
 });
+document.addEventListener('input', event => {
+  if (event.target?.matches?.('input, textarea, select, [contenteditable="true"]')) unsavedFormInput = true;
+}, true);
+document.addEventListener('change', event => {
+  if (event.target?.matches?.('input, textarea, select, [contenteditable="true"]')) unsavedFormInput = true;
+}, true);
 window.addEventListener('focusout', () => window.setTimeout(flushBackgroundRender, 0));
 window.addEventListener('hashchange', () => { const next = location.hash.slice(1); if (views.has(next)) { view = next; selectedTaskId = null; isSidebarOpen = false; render(); } });
 window.addEventListener('popstate', routePublicNavigation);
