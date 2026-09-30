@@ -292,7 +292,7 @@ function browserNotificationPermission() {
 function registerNotificationWorker() {
   if (notificationWorkerPromise) return notificationWorkerPromise;
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return Promise.resolve(null);
-  notificationWorkerPromise = navigator.serviceWorker.register('/notifications-sw.js', { scope: '/' }).catch(() => null);
+  notificationWorkerPromise = navigator.serviceWorker.register('/notifications-sw.js', { scope: '/', updateViaCache: 'none' }).then(registration => navigator.serviceWorker.ready.catch(() => registration)).catch(() => null);
   return notificationWorkerPromise;
 }
 
@@ -300,12 +300,18 @@ async function showBrowserNotification(title, body, { id = '', taskId = null } =
   if (browserNotificationPermission() !== 'granted') return false;
   const options = { body, icon: '/favicon.svg', badge: '/favicon.svg', tag: id || undefined, renotify: false, data: { taskId } };
   try {
-    const registration = await registerNotificationWorker();
-    if (registration?.showNotification) await registration.showNotification(title, options);
-    else new window.Notification(title, options);
+    // The page is the reliable foreground delivery path. A service-worker
+    // notification can be suppressed while its worker is still activating;
+    // direct browser notifications do not have that race.
+    new window.Notification(title, options);
     return true;
   } catch {
-    try { new window.Notification(title, options); return true; } catch { return false; }
+    try {
+      const registration = await registerNotificationWorker();
+      if (!registration?.showNotification) return false;
+      await registration.showNotification(title, options);
+      return true;
+    } catch { return false; }
   }
 }
 
@@ -344,6 +350,11 @@ async function enableBrowserNotifications() {
     showToast('Browser notifications are enabled.');
   } catch { showToast('Could not enable browser notifications. Check your browser settings.'); }
   render();
+}
+
+async function testBrowserNotifications() {
+  const shown = await showBrowserNotification('Silico test notification', 'Browser notifications are working.', { id: `notification:test:${Date.now()}` });
+  showToast(shown ? 'Test notification sent.' : 'The browser did not accept the notification. Check site permissions.');
 }
 
 function addAppNotification({ type = 'info', title, body = '', task = null, id = '' } = {}) {
@@ -1495,7 +1506,11 @@ function renderNotificationSettings() {
       : permission === 'unsupported'
         ? '<strong>Browser notifications are unavailable.</strong><span class="muted">Use a current browser on a secure connection to receive reminders.</span>'
         : '<strong>Enable browser notifications.</strong><span class="muted">Silico will notify you when a task is created and five minutes before a timed task is due.</span>';
-  const action = permission === 'default' ? '<button class="secondary-button" type="button" data-action="enable-browser-notifications">Enable notifications</button>' : '';
+  const action = permission === 'default'
+    ? '<button class="secondary-button" type="button" data-action="enable-browser-notifications">Enable notifications</button>'
+    : permission === 'granted'
+      ? '<button class="secondary-button" type="button" data-action="test-browser-notification">Send test</button>'
+      : '';
   return `<section class="settings-section notification-settings"><div class="settings-title"><h2>Notifications</h2><p>Keep Silico open in your browser or enable browser notifications to receive reminders outside the notification tab.</p></div><div class="notification-permission-row"><div>${content}</div>${action}</div></section>`;
 }
 
@@ -2563,6 +2578,7 @@ function handleAction(action, id) {
   if (action === 'close-sidebar') { isSidebarOpen = false; render(); return; }
   if (action === 'open-settings') { view = 'settings'; location.hash = view; selectedTaskId = null; isSidebarOpen = false; render(); return; }
   if (action === 'enable-browser-notifications') { void enableBrowserNotifications(); return; }
+  if (action === 'test-browser-notification') { void testBrowserNotifications(); return; }
   if (action === 'save-display-name') {
     const previousState = stateSnapshot();
     state.profile.displayName = String(document.querySelector('#display-name')?.value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
