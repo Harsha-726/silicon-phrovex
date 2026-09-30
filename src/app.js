@@ -5,6 +5,7 @@ import { clerk, clerkLoadOptions, platformStatus } from './platform.js';
 import { createTaskRepository } from './repository.js';
 import { createTaskPersistenceCoordinator } from './task-persistence.js';
 import { deduplicateTaskRecords, taskIdentity } from './task-merge.js';
+import { taskNotificationTiming } from './notifications.js';
 import './styles.css';
 
 const STORAGE_KEY = 'silico.state.v1';
@@ -62,6 +63,7 @@ let undoTimer = null;
 let undoBusy = false;
 let activeToast = null;
 let notificationsOpen = false;
+let notificationWorkerPromise = null;
 let lastPlannerToastKey = '';
 let remoteSyncPromise = null;
 let localScheduleMutationVersion = 0;
@@ -283,42 +285,99 @@ function notificationStorageId(type, task, suffix = '') {
   return `notification:${type}:${task?.id || 'workspace'}:${suffix || task?.updatedAt || toDateKey()}`;
 }
 
+function browserNotificationPermission() {
+  return typeof window !== 'undefined' && 'Notification' in window ? window.Notification.permission : 'unsupported';
+}
+
+function registerNotificationWorker() {
+  if (notificationWorkerPromise) return notificationWorkerPromise;
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return Promise.resolve(null);
+  notificationWorkerPromise = navigator.serviceWorker.register('/notifications-sw.js', { scope: '/' }).catch(() => null);
+  return notificationWorkerPromise;
+}
+
+async function showBrowserNotification(title, body, { id = '', taskId = null } = {}) {
+  if (browserNotificationPermission() !== 'granted') return false;
+  const options = { body, icon: '/favicon.svg', badge: '/favicon.svg', tag: id || undefined, renotify: false, data: { taskId } };
+  try {
+    const registration = await registerNotificationWorker();
+    if (registration?.showNotification) await registration.showNotification(title, options);
+    else new window.Notification(title, options);
+    return true;
+  } catch {
+    try { new window.Notification(title, options); return true; } catch { return false; }
+  }
+}
+
+async function deliverBrowserNotification(item) {
+  if (!item || item.browserDeliveredAt || item.browserDeliveryPending || browserNotificationPermission() !== 'granted') return;
+  item.browserDeliveryPending = true;
+  try {
+    if (await showBrowserNotification(item.title, item.body, { id: item.id, taskId: item.taskId })) {
+      item.browserDeliveredAt = new Date().toISOString();
+      delete item.browserDeliveryPending;
+      saveState();
+      void persistProfile();
+    }
+  } finally {
+    delete item.browserDeliveryPending;
+  }
+}
+
+async function deliverPendingBrowserNotifications() {
+  if (browserNotificationPermission() !== 'granted') return;
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  const pending = (state.profile.notifications || []).filter(item => ['task-due-soon', 'task-overdue'].includes(item.type) && !item.browserDeliveredAt && Date.parse(item.createdAt || '') >= cutoff);
+  await Promise.all(pending.map(item => deliverBrowserNotification(item)));
+}
+
+async function enableBrowserNotifications() {
+  if (typeof window === 'undefined' || !('Notification' in window)) { showToast('This browser does not support notifications.'); return; }
+  if (!window.isSecureContext) { showToast('Browser notifications require a secure connection.'); return; }
+  if (window.Notification.permission === 'denied') { showToast('Notifications are blocked. Allow them for Silico in your browser site settings.'); return; }
+  try {
+    const permission = await window.Notification.requestPermission();
+    if (permission !== 'granted') { showToast('Notifications remain disabled.'); render(); return; }
+    await registerNotificationWorker();
+    await deliverPendingBrowserNotifications();
+    await showBrowserNotification('Silico notifications enabled', 'You’ll receive task reminders five minutes before they are due.', { id: `notification:test:${Date.now()}` });
+    showToast('Browser notifications are enabled.');
+  } catch { showToast('Could not enable browser notifications. Check your browser settings.'); }
+  render();
+}
+
 function addAppNotification({ type = 'info', title, body = '', task = null, id = '' } = {}) {
   if (!title) return;
   state.profile.notifications ||= [];
   const notificationId = id || notificationStorageId(type, task);
-  if (state.profile.notifications.some(item => item.id === notificationId)) return;
-  state.profile.notifications.unshift({ id: notificationId, type, title: String(title).slice(0, 180), body: String(body).slice(0, 500), taskId: task?.id || null, createdAt: new Date().toISOString(), read: false });
+  const existing = state.profile.notifications.find(item => item.id === notificationId);
+  if (existing) { void deliverBrowserNotification(existing); return; }
+  const notification = { id: notificationId, type, title: String(title).slice(0, 180), body: String(body).slice(0, 500), taskId: task?.id || null, createdAt: new Date().toISOString(), read: false };
+  state.profile.notifications.unshift(notification);
   state.profile.notifications = state.profile.notifications.slice(0, 100);
   saveState();
   void persistProfile();
-  if (typeof window !== 'undefined' && 'Notification' in window) {
-    const notify = () => { if (Notification.permission === 'granted') new Notification(title, { body, icon: '/favicon.svg' }); };
-    if (Notification.permission === 'granted') notify();
-    else if (Notification.permission === 'default' && type === 'task-created') void Notification.requestPermission().then(permission => { if (permission === 'granted') notify(); }).catch(() => {});
-  }
+  void deliverBrowserNotification(notification);
+  if (browserNotificationPermission() === 'default' && type === 'task-created') void window.Notification.requestPermission().then(permission => { if (permission === 'granted') void deliverBrowserNotification(notification); }).catch(() => {});
   if (notificationsOpen) render();
 }
 
 function checkDueNotifications(now = new Date()) {
-  const todayKey = toDateKey(now);
   state.tasks.filter(task => task.status !== 'completed').forEach(task => {
-    const date = taskDisplayDate(task);
-    const time = taskDisplayTime(task);
-    if (!date || !time) return;
-    const dueAt = dateAt(date, time);
-    const minutesUntil = Math.round((dueAt.getTime() - now.getTime()) / 60000);
-    if (minutesUntil >= 0 && minutesUntil <= 5) {
+    const timing = taskNotificationTiming(task, now);
+    if (!timing) return;
+    const { date, time, minutesUntil } = timing;
+    if (timing.kind === 'task-due-soon') {
       addAppNotification({
         type: 'task-due-soon',
         task,
-        id: notificationStorageId('task-due-soon', task, `${date}T${time.slice(0, 5)}`),
+        id: notificationStorageId('task-due-soon', task, `${date}T${time}`),
         title: `${task.title} is due soon`,
         body: minutesUntil === 0 ? 'Due now.' : `Due in ${minutesUntil} minute${minutesUntil === 1 ? '' : 's'}.`
       });
     }
-    if (date === todayKey && dueAt.getTime() < now.getTime() && minutesUntil >= -5) {
-      addAppNotification({ type: 'task-overdue', task, id: notificationStorageId('task-overdue', task, `${date}T${time.slice(0, 5)}`), title: `${task.title} is overdue`, body: 'Open the task to reschedule it.' });
+    if (timing.kind === 'task-overdue') {
+      addAppNotification({ type: 'task-overdue', task, id: notificationStorageId('task-overdue', task, `${date}T${time}`), title: `${task.title} is overdue`, body: 'Open the task to reschedule it.' });
     }
   });
 }
@@ -1427,6 +1486,19 @@ function renderSettings() {
   return `<div class="settings-layout"><section class="settings-section profile-settings"><div class="settings-title"><h2>Profile</h2><p>Your profile picture is saved to your signed-in account and will follow you across devices.</p></div><div class="profile-picture-editor"><span class="avatar profile-avatar">${avatarContent()}</span><div class="profile-picture-copy"><strong>${escapeHtml(currentUser?.firstName || currentUser?.username || currentUserEmail().split('@')[0] || 'Your profile')}</strong><span class="muted">${escapeHtml(accountEmail())}</span><label class="secondary-button profile-picture-button" for="profile-picture-input">${profilePictureBusy ? 'Saving…' : 'Choose profile picture'}</label><input id="profile-picture-input" type="file" accept="image/*"${profilePictureBusy ? ' disabled' : ''}/><small class="muted">Phone photos are resized automatically · 25 MB max</small></div></div></section><section class="settings-section"><div class="settings-title"><h2>Study preferences</h2><p>Silico uses these preferences to place realistic study sessions around your commitments.</p></div><label>Default session length<select id="session-length"><option value="30" ${state.profile.sessionLength === 30 ? 'selected' : ''}>30 minutes</option><option value="45" ${state.profile.sessionLength === 45 ? 'selected' : ''}>45 minutes</option><option value="60" ${state.profile.sessionLength === 60 ? 'selected' : ''}>1 hour</select></label><label>Default sessions/week<input id="sessions-per-assessment" type="number" min="1" max="14" value="${state.profile.sessionsPerWeek ?? state.profile.sessionsPerAssessment ?? 3}"/></label><div class="settings-hint">Sessions/week is also the number of consecutive days before an assessment that receive study sessions.</div><div class="settings-row"><label>Study window starts<input id="preferred-start" type="time" value="${state.profile.preferredStart}"/></label><label>Latest study time<input id="latest-study" type="time" value="${state.profile.latestStudyTime}"/></label></div><button class="primary-button" type="button" data-action="save-settings">Save preferences</button></section><section class="settings-section class-management"><div class="settings-title"><h2>Manage classes</h2><p>Add or rename classes anytime. Existing tasks keep their class when you rename it.</p></div>${managedClasses || '<p class="muted">No classes yet.</p>'}<div class="class-add-row"><input id="new-class-name" placeholder="Add a class" maxlength="80"/><button class="secondary-button" type="button" data-action="add-class">Add class</button></div><button class="primary-button" type="button" data-action="save-classes">Save class changes</button></section><section class="settings-section"><div class="settings-title"><h2>Class allocation</h2><p>Sessions/week also controls how many days before each assessment receive study sessions.</p></div><div class="class-preference-list">${classRows || '<p class="muted">Add a class to set its study allocation.</p>'}</div><button class="secondary-button" type="button" data-action="save-settings">Save class allocation</button></section><section class="settings-section"><div class="settings-title"><h2>Scheduling boundaries</h2><p>These hard boundaries are always respected by the scheduler.</p></div><div class="settings-row"><label>School starts<input id="school-start" type="time" value="${state.profile.schoolStart || '08:00'}"/></label><label>School ends<input id="school-end" type="time" value="${state.profile.schoolEnd || '16:00'}"/></label></div><div class="weekday-picker"><span>School days</span>${[['1','Mon'],['2','Tue'],['3','Wed'],['4','Thu'],['5','Fri'],['6','Sat'],['0','Sun']].map(([value,label]) => `<label class="check-label"><input class="school-day" type="checkbox" value="${value}" ${(state.profile.schoolDays || [1,2,3,4,5]).includes(Number(value)) ? 'checked' : ''}/> ${label}</label>`).join('')}</div><div class="boundary-row"><span class="boundary-icon">◷</span><div><strong>Timezone</strong><small>${Intl.DateTimeFormat().resolvedOptions().timeZone}</small></div></div><button class="primary-button" type="button" data-action="save-settings">Save boundaries</button></section><section class="settings-section danger-zone"><div class="settings-title"><h2>Workspace data</h2><p>Remove every task and derived occurrence from your signed-in workspace.</p></div><div class="header-actions"><button class="danger-button" type="button" data-action="delete-all">Delete all tasks</button></div></section></div>`;
 }
 
+function renderNotificationSettings() {
+  const permission = browserNotificationPermission();
+  const content = permission === 'granted'
+    ? '<strong>Browser notifications are enabled.</strong><span class="muted">Silico can show task-created and five-minute due reminders.</span>'
+    : permission === 'denied'
+      ? '<strong>Browser notifications are blocked.</strong><span class="muted">Allow notifications for Silico in your browser site settings, then reload this page.</span>'
+      : permission === 'unsupported'
+        ? '<strong>Browser notifications are unavailable.</strong><span class="muted">Use a current browser on a secure connection to receive reminders.</span>'
+        : '<strong>Enable browser notifications.</strong><span class="muted">Silico will notify you when a task is created and five minutes before a timed task is due.</span>';
+  const action = permission === 'default' ? '<button class="secondary-button" type="button" data-action="enable-browser-notifications">Enable notifications</button>' : '';
+  return `<section class="settings-section notification-settings"><div class="settings-title"><h2>Notifications</h2><p>Keep Silico open in your browser or enable browser notifications to receive reminders outside the notification tab.</p></div><div class="notification-permission-row"><div>${content}</div>${action}</div></section>`;
+}
+
 function renderFeedbackSection() {
   return `<section id="feedback-section" class="settings-section feedback-section"><div class="settings-title"><h2>Feedback</h2><p>Report a bug or tell us what would make Silico better. Please don’t include passwords or other sensitive information.</p></div><form id="feedback-form" class="feedback-form"><label>Type<select name="category"><option value="feedback" ${feedbackDraft.category === 'feedback' ? 'selected' : ''}>General feedback</option><option value="bug" ${feedbackDraft.category === 'bug' ? 'selected' : ''}>Bug report</option></select></label><label>Details<textarea name="message" maxlength="5000" rows="5" placeholder="What happened, or what would you like to see?" required>${escapeHtml(feedbackDraft.message)}</textarea></label><div class="feedback-actions"><button class="primary-button" type="submit" ${feedbackBusy ? 'disabled' : ''}>${feedbackBusy ? 'Sending…' : 'Send feedback'}</button><span class="muted">Your signed-in account is attached so we can follow up if needed.</span></div></form></section>`;
 }
@@ -1939,6 +2011,7 @@ function bindEvents() {
   document.querySelectorAll('[data-action="toggle-feedback-resolved"]').forEach(input => input.addEventListener('click', event => event.stopPropagation()));
   document.querySelectorAll('[data-action="toggle-feedback-resolved"]').forEach(input => input.addEventListener('change', event => { void updateFeedbackResolved(input.dataset.id, event.target.checked); }));
   if (view === 'feedback-admin' && repository && !feedbackAdminLoaded && !feedbackAdminBusy && !feedbackAdminError) void loadAdminFeedback();
+  if (view === 'settings' && !document.querySelector('.notification-settings')) document.querySelector('.settings-layout')?.insertAdjacentHTML('afterbegin', renderNotificationSettings());
   if (view === 'settings' && !document.querySelector('#ical-import')) document.querySelector('.settings-layout')?.insertAdjacentHTML('beforeend', calendarImportSection());
   if (view === 'settings' && !document.querySelector('#calendar-export-section')) document.querySelector('.settings-layout')?.insertAdjacentHTML('beforeend', calendarExportSection());
   document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => { view = el.dataset.view; location.hash = view; selectedTaskId = null; isSidebarOpen = false; render(); }));
@@ -2489,6 +2562,7 @@ function handleAction(action, id) {
   if (action === 'toggle-sidebar') { isSidebarOpen = !isSidebarOpen; render(); return; }
   if (action === 'close-sidebar') { isSidebarOpen = false; render(); return; }
   if (action === 'open-settings') { view = 'settings'; location.hash = view; selectedTaskId = null; isSidebarOpen = false; render(); return; }
+  if (action === 'enable-browser-notifications') { void enableBrowserNotifications(); return; }
   if (action === 'save-display-name') {
     const previousState = stateSnapshot();
     state.profile.displayName = String(document.querySelector('#display-name')?.value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
@@ -4283,6 +4357,11 @@ document.addEventListener('click', event => {
 });
 window.addEventListener('online', () => { void syncRemoteState(); });
 window.addEventListener('visibilitychange', () => { if (!document.hidden) void syncRemoteState(); });
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', event => {
+  if (event.data?.type !== 'silico-notification-click') return;
+  const taskId = event.data.taskId;
+  if (taskId && state.tasks.some(task => task.id === taskId)) { selectedTaskId = taskId; render(); }
+});
 window.addEventListener('silico-task-not-found', event => {
   const id = event.detail?.id;
   if (!id || !state.tasks.some(task => task.id === id)) return;
@@ -4490,6 +4569,7 @@ async function bootstrap() {
       activeTeamProjectId = null;
       activeTeamDetail = null;
       normalizeState();
+      void registerNotificationWorker();
       if (registerDailyVisit()) persistProfile();
       saveState();
       render();
@@ -4504,6 +4584,7 @@ async function bootstrap() {
   loadTeamInviteCodes();
   loadTeamTaskClearTimestamps();
   normalizeState();
+  void registerNotificationWorker();
   if (registerDailyVisit()) persistProfile();
   saveState();
   if (currentUser && state.profile.onboardingComplete === false) renderOnboarding();
