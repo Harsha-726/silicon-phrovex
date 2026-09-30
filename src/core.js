@@ -354,6 +354,31 @@ export function taskExecution(task = {}) {
     : { date: null, time: null };
 }
 
+// Study-session identity must survive edits and migrations. Older rows used
+// the assessment's capture/idempotency key, while edited rows could be
+// rewritten with the assessment UUID. The assessment anchor plus the actual
+// execution slot is the stable identity shared by both forms.
+export function assessmentSessionIdentity(assessment, session) {
+  const anchor = assessment?.idempotencyKey || assessment?.id || session?.relatedAssessmentId || null;
+  const execution = taskExecution(session || {});
+  const identitySlot = String(session?.schedulingIdentity || '').match(/:(\d{4}-\d{2}-\d{2}):(\d{2}:?\d{2})(?::\d{2})?$/);
+  const date = execution.date || session?.dueDate || identitySlot?.[1] || null;
+  const time = execution.time || session?.dueTime || (identitySlot?.[2] ? `${identitySlot[2].slice(0, 2)}:${identitySlot[2].slice(-2)}` : null);
+  return anchor && date && time ? `${anchor}:${date}:${time}` : null;
+}
+
+function preferAssessmentSession(left, right) {
+  if (left?.status === 'completed' && right?.status !== 'completed') return left;
+  if (right?.status === 'completed' && left?.status !== 'completed') return right;
+  const leftUpdated = taskSyncTimestamp(left);
+  const rightUpdated = taskSyncTimestamp(right);
+  if (leftUpdated !== rightUpdated) return leftUpdated > rightUpdated ? left : right;
+  const leftRemote = typeof left?.id === 'string' && /^[0-9a-f-]{36}$/i.test(left.id);
+  const rightRemote = typeof right?.id === 'string' && /^[0-9a-f-]{36}$/i.test(right.id);
+  if (leftRemote !== rightRemote) return leftRemote ? left : right;
+  return String(left?.id || '').localeCompare(String(right?.id || '')) <= 0 ? left : right;
+}
+
 export function taskDeadline(task = {}) {
   return {
     date: isDateKey(task.dueDate) ? task.dueDate : null,
@@ -900,7 +925,8 @@ export function planStudySessions(assessment, tasks, profile = {}) {
   const count = assessmentSessionCount(assessment, profile);
   const identityPrefixes = [assessment.id, assessment.idempotencyKey].filter(Boolean).map(value => `${value}:`);
   const existing = tasks.filter(task => task.type === 'study_session' && (task.relatedAssessmentId === assessment.id || identityPrefixes.some(prefix => String(task.schedulingIdentity || '').startsWith(prefix))));
-  if (existing.length >= count) return [];
+  const existingIdentities = new Set(existing.map(session => assessmentSessionIdentity(assessment, session)).filter(Boolean));
+  if (existingIdentities.size >= count) return [];
   const now = profile.now || new Date();
   // Reserve realistic slots for competing assignments before placing study
   // sessions. This is what makes an assessment aware of the whole workload
@@ -916,7 +942,7 @@ export function planStudySessions(assessment, tasks, profile = {}) {
     const time = findOpenSlot([...busyTasks, ...sessions], dateKey, settings.sessionLength || 45, { ...settings, now });
     if (!time) continue;
     const identity = `${assessment.idempotencyKey || assessment.id}:${dateKey}:${time}`;
-    if (tasks.some(task => task.schedulingIdentity === identity) || sessions.some(task => task.schedulingIdentity === identity)) continue;
+    if (existingIdentities.has(identity) || sessions.some(task => assessmentSessionIdentity(assessment, task) === identity)) continue;
     sessions.push({ ...makeTask({ title: `${assessment.className || 'Study'} Study`, dueDate: dateKey, dueTime: time, duration: settings.sessionLength || 45, subject: assessment.className }, { relatedAssessmentId: assessment.id, source: 'scheduler', userScheduled: false, autoScheduled: true, scheduleOrigin: SCHEDULE_ORIGINS.SILICO_SCHEDULED, flexibility: 'planned' }), type: 'study_session', autoScheduled: true, scheduleOrigin: SCHEDULE_ORIGINS.SILICO_SCHEDULED, schedulingIdentity: identity, schedulingReason: `Preparation for ${assessment.title || 'assessment'}`, priority: Math.max(1, assessment.priority || 1) });
   }
   return sessions;
@@ -945,7 +971,7 @@ export function planStudySessionsOnDates(target, dates, tasks, profile = {}) {
  * place; only missing capacity creates a new study session.
  */
 export function replanAssessmentSessions(assessment, tasks = [], profile = {}, options = {}) {
-  if (!assessment?.dueDate || assessment.status === 'completed') return { updates: [], created: [], sessions: [] };
+  if (!assessment?.dueDate || assessment.status === 'completed') return { updates: [], created: [], duplicates: [], sessions: [] };
   const now = profile.now instanceof Date ? profile.now : new Date(profile.now || Date.now());
   const classProfile = profile.classPreferences?.[assessment.className] || {};
   const settings = { ...profile, ...classProfile };
@@ -954,7 +980,24 @@ export function replanAssessmentSessions(assessment, tasks = [], profile = {}, o
   const assessmentTime = dateAt(assessment.dueDate, assessment.dueTime || '23:59').getTime();
   const latestStudyTime = toMinutes(settings.latestStudyTime);
   const identityPrefixes = [assessment.id, assessment.idempotencyKey].filter(Boolean).map(value => `${value}:`);
-  const sessions = tasks.filter(task => task.type === 'study_session' && (task.relatedAssessmentId === assessment.id || identityPrefixes.some(prefix => String(task.schedulingIdentity || '').startsWith(prefix))));
+  const rawSessions = tasks.filter(task => task.type === 'study_session' && (task.relatedAssessmentId === assessment.id || identityPrefixes.some(prefix => String(task.schedulingIdentity || '').startsWith(prefix))));
+  const sessionsByIdentity = new Map();
+  const duplicates = [];
+  rawSessions.forEach(session => {
+    const identity = assessmentSessionIdentity(assessment, session);
+    if (!identity) {
+      sessionsByIdentity.set(`${session.id}:unkeyed`, session);
+      return;
+    }
+    const previous = sessionsByIdentity.get(identity);
+    if (!previous) sessionsByIdentity.set(identity, session);
+    else {
+      const winner = preferAssessmentSession(previous, session);
+      sessionsByIdentity.set(identity, winner);
+      duplicates.push(winner === previous ? session : previous);
+    }
+  });
+  const sessions = [...sessionsByIdentity.values()];
   const completed = sessions.filter(task => task.status === 'completed').length;
   const active = sessions.filter(task => task.status !== 'completed');
   const future = active.filter(task => {
@@ -978,7 +1021,7 @@ export function replanAssessmentSessions(assessment, tasks = [], profile = {}, o
   // created only by an explicit study-planning request; ordinary assessment
   // maintenance may still recover existing missed sessions in place.
   if (options.createMissing === false) needed = Math.min(displaced.length, preparationDates.size);
-  if (!needed && !(options.createMissing === false && displaced.length)) return { updates: [], created: [], sessions };
+  if (!needed && !(options.createMissing === false && displaced.length)) return { updates: [], created: [], duplicates, sessions };
   const baseTasks = tasks.filter(task => !sessions.includes(task));
   const workingTasks = [...baseTasks, ...future.map(task => ({ ...task }))];
   const updates = [];
@@ -1014,7 +1057,7 @@ export function replanAssessmentSessions(assessment, tasks = [], profile = {}, o
     workingTasks.push(session);
     needed -= 1;
   }
-  return { updates, created, sessions: [...sessions.filter(session => !updates.some(update => update.id === session.id)), ...updates, ...created] };
+  return { updates, created, duplicates, sessions: [...sessions.filter(session => !updates.some(update => update.id === session.id)), ...updates, ...created] };
 }
 
 function distributeDates(candidates, count) {

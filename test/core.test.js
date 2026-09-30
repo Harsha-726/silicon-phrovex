@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addDays, assignUniqueClassHues, assessmentIdempotencyKey, assessmentTitle, assignmentTypeLabel, buildPlanningState, cleanCaptureInput, cleanTaskTitle, deadlineRisk, expandRecurringTask, findOpenSlot, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankRecommendations, recommendNextAction, recordCompletion, removeClassFromTitle, resolveDatePhrase, resolveDuration, resolvePriority, resolveStudyDates, resolveTimePhrase, scheduleOriginOf, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, setTaskExecution, splitCaptureInput, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, updateStreak, urgencyScore, INTENTS } from '../src/core.js';
+import { addDays, assignUniqueClassHues, assessmentIdempotencyKey, assessmentSessionIdentity, assessmentTitle, assignmentTypeLabel, buildPlanningState, cleanCaptureInput, cleanTaskTitle, deadlineRisk, expandRecurringTask, findOpenSlot, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankRecommendations, recommendNextAction, recordCompletion, removeClassFromTitle, resolveDatePhrase, resolveDuration, resolvePriority, resolveStudyDates, resolveTimePhrase, scheduleOriginOf, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, setTaskExecution, splitCaptureInput, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, updateStreak, urgencyScore, INTENTS } from '../src/core.js';
 import { inferSchoologyClassHint, isNonAcademicSchoologyEvent, parseICal } from '../src/ical.js';
 import { getNextBestAction, replanAssessmentSessions } from '../src/core.js';
 
@@ -461,6 +461,18 @@ test('planning is idempotent for an assessment already fully scheduled', () => {
     { id: 's3', type: 'study_session', relatedAssessmentId: 'a2', schedulingIdentity: 'a2:2026-08-25:1700' }
   ];
   assert.deepEqual(planStudySessions(assessment, existing, { sessionsPerAssessment: 3, now: fixedNow }), []);
+});
+
+test('edited and legacy session identities collapse to one assessment slot', () => {
+  const assessment = { id: 'assessment-remote-id', idempotencyKey: 'capture:assessment:chemistry:2026-09-10', title: 'Chemistry Quiz', className: 'Chemistry', dueDate: '2026-09-10', status: 'open' };
+  const legacy = { id: 'session-legacy', type: 'study_session', status: 'open', relatedAssessmentId: assessment.id, schedulingIdentity: `${assessment.idempotencyKey}:2026-09-08:17:00`, dueDate: '2026-09-08', dueTime: '17:00', duration: 45, updatedAt: '2026-09-01T12:00:00.000Z' };
+  const edited = { id: 'session-edited', type: 'study_session', status: 'open', relatedAssessmentId: assessment.id, schedulingIdentity: `${assessment.id}:2026-09-08:17:00`, dueDate: '2026-09-08', dueTime: '17:00', duration: 45, updatedAt: '2026-09-02T12:00:00.000Z' };
+  assert.equal(assessmentSessionIdentity(assessment, legacy), assessmentSessionIdentity(assessment, edited));
+  const result = replanAssessmentSessions(assessment, [assessment, legacy, edited], { now: new Date('2026-09-05T12:00:00'), sessionsPerAssessment: 1, sessionLength: 45, preferredStart: '16:00', latestStudyTime: '21:00', schoolDays: [] }, { createMissing: true });
+  assert.equal(result.duplicates.length, 1);
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.created.length, 0);
+  assert.equal(result.sessions[0].id, 'session-edited');
 });
 
 test('repeated assessment input produces one stable idempotency key', () => {

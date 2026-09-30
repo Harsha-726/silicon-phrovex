@@ -783,17 +783,29 @@ function replanAssessmentWork({ persist = false } = {}) {
   const changed = [];
   const created = [];
   const updated = [];
+  let removedDuplicates = false;
   const now = new Date();
   const assessments = state.tasks.filter(task => task.type === 'assessment' && task.status !== 'completed');
   for (const assessment of assessments) {
     const result = replanAssessmentSessions(assessment, state.tasks, { ...state.profile, now }, { createMissing: false });
+    // A prior edit can leave two local rows representing the same assessment
+    // slot when one row uses the old capture identity and the other uses the
+    // assessment UUID. Collapse that state before any further planning. Keep
+    // only the losing database id tombstoned; tombstoning its shared identity
+    // would hide the winner on the next remote merge.
+    for (const duplicate of result.duplicates || []) {
+      markTaskDeletedIdOnly(duplicate.id);
+      state.tasks = state.tasks.filter(task => task.id !== duplicate.id);
+      removedDuplicates = true;
+      if (repository && isRemoteTaskId(duplicate.id)) repository.remove(duplicate.id).catch(() => {});
+    }
     for (const update of result.updates) {
       const existing = state.tasks.find(task => task.id === update.id);
       if (existing) { Object.assign(existing, update); updated.push(existing); changed.push(existing); }
     }
     if (result.created.length) { state.tasks.push(...result.created); created.push(...result.created); changed.push(...result.created); }
   }
-  if (changed.length) {
+  if (changed.length || removedDuplicates) {
     saveState();
     if (repository && created.length) {
       Promise.all(created.map(async task => {
@@ -3246,7 +3258,7 @@ function saveDrawerTask(id) {
   if (timingChanged) task.scheduleOrigin = SCHEDULE_ORIGINS.USER_SCHEDULED;
   else if (!task.scheduledDate && !task.scheduledTime && !task.dueTime) task.scheduleOrigin = SCHEDULE_ORIGINS.UNSCHEDULED;
   else task.scheduleOrigin = scheduleOriginOf(task);
-  replanAssessmentWork({ persist: false });
+  const replannedAssessmentWork = replanAssessmentWork({ persist: false });
   const durationChanged = duration !== previousDuration;
   // Reflow every affected day after every timing or duration edit. This is a
   // local deterministic chain: rigid anchors stay put, while flexible work
@@ -3261,7 +3273,7 @@ function saveDrawerTask(id) {
   const collisionChanged = [];
   selectedTaskId = null;
   saveState();
-  const tasksToPersist = [...new Map([task, ...durationReflowChanged, ...collisionChanged].map(item => [item.id, item])).values()];
+  const tasksToPersist = [...new Map([task, ...replannedAssessmentWork, ...durationReflowChanged, ...collisionChanged].map(item => [item.id, item])).values()];
   const persist = repository ? Promise.all(tasksToPersist.map(item => repository.update(item))).then(savedTasks => { const savedTask = savedTasks.find(item => item?.id === task.id); if (savedTask) Object.assign(task, savedTask); Object.assign(task, reminderSettings); tasksToPersist.forEach(item => { delete item.syncRetryAfter; }); saveState(); }) : Promise.resolve();
   persist.catch(() => { markTaskSyncRetry(task); showToast('Could not sync this edit yet. It is saved locally and will retry.'); }).then(() => syncEventReminder(task)).then(() => { if (!selectedTaskId) render(); }).catch(() => showToast('The event reminder could not be created yet.'));
   render();
@@ -3375,12 +3387,42 @@ async function createStudyPlanFromCommand(command, metadata = {}) {
   const selectedClass = metadata.scopeType === 'class' ? metadata.scopeName : metadata.className;
   const scopedClass = selectedClass ? matchExistingClass({ subject: selectedClass, classHint: selectedClass, title: selectedClass, raw: selectedClass }, state.classes) || selectedClass : null;
   const resolvedClass = scopedClass || matchedClass || command.subject || null;
-  const assessment = command.studyDates?.length ? null : studyAssessmentForCommand(command, resolvedClass);
+  let assessment = command.studyDates?.length ? null : studyAssessmentForCommand(command, resolvedClass);
+  let assessmentCreated = false;
+  let persistenceWarning = false;
   const dueDate = assessment?.dueDate || command.dueDate;
   if (!dueDate && !command.studyDates?.length) return { studyPlan: true, task: null, sessions: [], message: 'I couldn’t find an upcoming test to plan against. Add the test date or say which days to study.' };
 
-  // A virtual target lets “study for … test” schedule preparation without
-  // manufacturing a visible assessment from the request itself.
+  // A dated “study for chemistry quiz/test” request names a real assessment,
+  // not merely a planning target. Persist that anchor first so the generated
+  // sessions cannot survive while the physical assessment is missing. A
+  // request containing only explicit study dates remains a virtual plan,
+  // because it has no assessment deadline to persist.
+  if (!assessment && dueDate && command.dueDateExplicit) {
+    const title = assessmentTitle(command, resolvedClass || command.subject || null);
+    const anchor = makeTask({ ...command, title, subject: resolvedClass || command.subject || null, dueDate, dueTime: command.dueTime || null, dueDateExplicit: true }, {
+      source: 'capture',
+      type: 'assessment',
+      idempotencyKey: captureIdempotencyKey({ ...command, intent: INTENTS.CREATE_ASSESSMENT, title, subject: resolvedClass || command.subject || null, dueDate })
+    });
+    anchor.type = 'assessment';
+    anchor.assignmentType = inferAssignmentType(title, 'assessment', 'capture');
+    anchor.assignmentTypeExplicit = true;
+    state.tasks.push(anchor);
+    addAppNotification({ type: 'task-created', task: anchor, title: 'Assessment created', body: `${anchor.title}${anchor.dueDate ? ` · ${formatDate(anchor.dueDate)}` : ''}` });
+    if (repository) {
+      try {
+        const saved = await persistCreatedTask(anchor);
+        Object.assign(anchor, saved);
+        delete anchor.syncRetryAfter;
+      } catch {
+        persistenceWarning = true;
+        markTaskSyncRetry(anchor);
+      }
+    }
+    assessment = anchor;
+    assessmentCreated = true;
+  }
   const target = assessment || { id: 'study-plan:' + String(resolvedClass || 'general').toLowerCase() + ':' + (dueDate || 'requested'), className: resolvedClass, dueDate, priority: command.priority || 1 };
   const sessions = (command.studyDates?.length
     ? planStudySessionsOnDates(target, command.studyDates, state.tasks, { ...state.profile, now: new Date() })
@@ -3389,13 +3431,12 @@ async function createStudyPlanFromCommand(command, metadata = {}) {
     idempotencyKey: 'study-plan:' + target.id + ':' + session.schedulingIdentity
   }));
   state.tasks.push(...sessions);
-  let persistenceWarning = false;
   if (repository) {
     await Promise.all(sessions.map(async session => {
       try { const saved = await persistCreatedTask(session); Object.assign(session, saved); } catch { persistenceWarning = true; markTaskSyncRetry(session); }
     }));
   }
-  return { studyPlan: true, task: assessment || null, sessions, persistenceWarning, command };
+  return { studyPlan: true, task: assessment || null, assessmentCreated, sessions, persistenceWarning, command };
 }
 
 async function createTaskFromCommand(command, metadata = {}) {
@@ -3749,7 +3790,11 @@ async function handleCapture(input, metadata = {}) {
     const regularTasks = created.filter(result => !result.studyPlan);
     const studyPlans = created.filter(result => result.studyPlan);
     const regularTaskSummary = regularTasks.length ? String(regularTasks.length) + ' ' + (regularTasks.length === 1 ? 'task' : 'tasks') + ' added' + (sessions ? ' with ' + sessions + ' study ' + (sessions === 1 ? 'session' : 'sessions') : '') + '.' : null;
-    const studyPlanSummary = studyPlans.map(result => (result.sessions || []).length ? String(result.sessions.length) + ' study ' + (result.sessions.length === 1 ? 'session' : 'sessions') + ' scheduled.' : result.message || 'I could not find a matching test to plan against.').join(' ');
+    const studyPlanSummary = studyPlans.map(result => {
+      if (!result.sessions?.length) return result.message || 'I could not find a matching test to plan against.';
+      const anchor = result.assessmentCreated ? `${result.task?.title || 'Assessment'} added with ` : '';
+      return `${anchor}${result.sessions.length} study ${result.sessions.length === 1 ? 'session' : 'sessions'} scheduled.`;
+    }).join(' ');
     const summary = [regularTaskSummary, studyPlanSummary || null, duplicates ? duplicateSummary : null, blocked.length ? blocked.join(' ') : null, failed.length ? 'Some items were saved locally and will retry syncing.' : null, commands.find(command => command.warning)?.warning].filter(Boolean).join(' ');
     if (created.length) offerUndo(summary, previousState);
     else showToast(summary);
