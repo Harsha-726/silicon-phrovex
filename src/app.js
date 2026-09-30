@@ -64,6 +64,7 @@ let undoBusy = false;
 let activeToast = null;
 let notificationsOpen = false;
 let notificationWorkerPromise = null;
+let notificationPermissionPromise = null;
 let unsavedFormInput = false;
 let lastPlannerToastKey = '';
 let remoteSyncPromise = null;
@@ -290,6 +291,19 @@ function browserNotificationPermission() {
   return typeof window !== 'undefined' && 'Notification' in window ? window.Notification.permission : 'unsupported';
 }
 
+function requestBrowserNotificationPermission() {
+  if (browserNotificationPermission() !== 'default') return Promise.resolve(browserNotificationPermission());
+  if (notificationPermissionPromise) return notificationPermissionPromise;
+  try {
+    notificationPermissionPromise = window.Notification.requestPermission()
+      .catch(() => 'default')
+      .finally(() => { notificationPermissionPromise = null; });
+  } catch {
+    notificationPermissionPromise = Promise.resolve('default');
+  }
+  return notificationPermissionPromise;
+}
+
 function registerNotificationWorker() {
   if (notificationWorkerPromise) return notificationWorkerPromise;
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return Promise.resolve(null);
@@ -343,7 +357,7 @@ async function enableBrowserNotifications() {
   if (!window.isSecureContext) { showToast('Browser notifications require a secure connection.'); return; }
   if (window.Notification.permission === 'denied') { showToast('Notifications are blocked. Allow them for Silico in your browser site settings.'); return; }
   try {
-    const permission = await window.Notification.requestPermission();
+    const permission = await requestBrowserNotificationPermission();
     if (permission !== 'granted') { showToast('Notifications remain disabled.'); render(); return; }
     await registerNotificationWorker();
     await deliverPendingBrowserNotifications();
@@ -370,7 +384,7 @@ function addAppNotification({ type = 'info', title, body = '', task = null, id =
   saveState();
   void persistProfile();
   void deliverBrowserNotification(notification);
-  if (browserNotificationPermission() === 'default' && type === 'task-created') void window.Notification.requestPermission().then(permission => { if (permission === 'granted') void deliverBrowserNotification(notification); }).catch(() => {});
+  if (browserNotificationPermission() === 'default' && type === 'task-created') void requestBrowserNotificationPermission().then(permission => { if (permission === 'granted') void deliverBrowserNotification(notification); });
   if (notificationsOpen) render();
 }
 
@@ -757,6 +771,9 @@ async function createTaskFromOverlay(form, close) {
   const data = new FormData(form);
   const title = String(data.get('title') || '').trim();
   if (!title) { form.elements.title?.focus(); return; }
+  // Chrome only allows a permission prompt while the Add task submit gesture
+  // is still active. Request it before any parser or persistence await.
+  void requestBrowserNotificationPermission();
   const dueDate = String(data.get('dueDate') || '').trim();
   const dueTime = String(data.get('dueTime') || '').trim();
   // A task created from the Q/add-task form is ordinary planned work, not a
@@ -3378,6 +3395,7 @@ async function copyTask(id) {
   const baseId = id?.includes('::') ? id.split('::')[0] : id;
   const source = state.tasks.find(task => task.id === baseId);
   if (!source) return;
+  void requestBrowserNotificationPermission();
   const previousState = stateSnapshot();
   const copy = {
     ...source,
@@ -3416,6 +3434,7 @@ async function createBrainDumpTask(event) {
   const form = event.currentTarget;
   const title = form.elements.title?.value?.trim() || '';
   if (!title) { showToast('Add something to your Moment first.'); return; }
+  void requestBrowserNotificationPermission();
   const shouldPlan = form.elements.planning?.value === 'yes';
   const task = makeTask({ title, priority: Number(form.elements.priority?.value || 1) }, { source: 'capture' });
   task.description = form.elements.description?.value?.trim() || '';
@@ -3783,6 +3802,12 @@ function clearPlannedSchedule() {
 
 async function handleCapture(input, metadata = {}) {
   if (!input.trim() || isProcessingCapture) return;
+  const localIntent = parseCapture(input).intent;
+  if ([INTENTS.CREATE_TASK, INTENTS.CREATE_ASSESSMENT, INTENTS.CREATE_RECURRING_TASK, INTENTS.STUDY_PLANNING].includes(localIntent)) {
+    // Preserve the Enter-key user gesture for Chrome's permission prompt;
+    // parsing and remote persistence happen asynchronously below.
+    void requestBrowserNotificationPermission();
+  }
   isProcessingCapture = true;
   render();
   try {
