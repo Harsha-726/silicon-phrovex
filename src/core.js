@@ -473,6 +473,22 @@ export function taskSort(a, b) {
     || String(a.title || '').localeCompare(String(b.title || ''));
 }
 
+// Same-day focus is a prioritization decision. Keep it in the shared core so
+// the dashboard applies one deterministic rule everywhere: priority first,
+// then remaining duration, then the normal execution order for ties.
+export function rankNextUpSameDay(tasks = []) {
+  return [...(Array.isArray(tasks) ? tasks : [])].sort((left, right) => {
+    const assessmentRank = task => task?.type === 'assessment' || ['test', 'quiz'].includes(String(task?.assignmentType || '').toLowerCase()) ? 1 : 0;
+    const assessmentDifference = assessmentRank(right) - assessmentRank(left);
+    if (assessmentDifference) return assessmentDifference;
+    const priorityDifference = (Number(right.priority) || 1) - (Number(left.priority) || 1);
+    if (priorityDifference) return priorityDifference;
+    const leftDuration = Number(left.remainingDuration ?? left.duration) || 30;
+    const rightDuration = Number(right.remainingDuration ?? right.duration) || 30;
+    return rightDuration - leftDuration || taskSort(left, right);
+  });
+}
+
 export function occurrenceKey(task, dateKey) {
   return `${task.id}::${dateKey}`;
 }

@@ -1,6 +1,6 @@
-import { ASSIGNMENT_TYPES, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, addDays, assignUniqueClassHues, assignmentTypeLabel, assessmentTitle, buildPlanningState, cleanTaskTitle, clearTaskExecution, dateAt, deadlineRisk, expandRecurringTask, extractSubject, formatDate, formatLongDate, formatTime, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isDateKey, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, normalizeClassColorKey, normalizeRecurrence, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankRecommendations, recommendNextAction, replanAssessmentSessions, recordCompletion, recurrenceFromText, removeClassFromTitle, resolvePriority, scheduleOriginOf, seedState, setTaskExecution, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, uid, updateStreak, INTENTS } from './core.js';
+import { ASSIGNMENT_TYPES, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, addDays, assignUniqueClassHues, assignmentTypeLabel, assessmentTitle, buildPlanningState, cleanTaskTitle, clearTaskExecution, dateAt, deadlineRisk, expandRecurringTask, extractSubject, formatDate, formatLongDate, formatTime, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isDateKey, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, normalizeClassColorKey, normalizeRecurrence, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankNextUpSameDay, rankRecommendations, recommendNextAction, replanAssessmentSessions, recordCompletion, recurrenceFromText, removeClassFromTitle, resolvePriority, scheduleOriginOf, seedState, setTaskExecution, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, uid, updateStreak, INTENTS } from './core.js';
 import { parseCaptureCommands } from './capture.js';
-import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEvent, isPastImportedOneTimeTask, parseICal, preserveImportedCalendarTask, repairImportedCalendarClass } from './ical.js';
+import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEvent, isPastImportedOneTimeTask, matchesImportedCalendarTask, parseICal, preserveImportedCalendarTask, repairImportedCalendarClass } from './ical.js';
 import { clerk, clerkLoadOptions, platformStatus } from './platform.js';
 import { createTaskRepository } from './repository.js';
 import { createTaskPersistenceCoordinator } from './task-persistence.js';
@@ -1195,9 +1195,13 @@ function nextPlanningAction() {
   // task over the earliest execution. That made the banner point at a task
   // other than the first visible task.
   const todayKey = today();
-  const todayTask = tasksForDate(todayKey).find(task => task.status !== 'completed');
-  const endDate = addDays(todayKey, Number(state.profile.inboxWindowDays ?? 30) || 30);
-  const nextTask = todayTask || nextUpcomingTask(rangeTasks(addDays(todayKey, 1), endDate));
+  const todayTasks = tasksForDate(todayKey).filter(task => task.status !== 'completed');
+  const todayTask = rankNextUpSameDay(todayTasks)[0] || null;
+  // A dashboard focus should never pull a distant task forward. Tomorrow is
+  // the only future fallback; anything later belongs in Upcoming.
+  const tomorrowKey = addDays(todayKey, 1);
+  const tomorrowTasks = rangeTasks(tomorrowKey, tomorrowKey).filter(task => task.status !== 'completed');
+  const nextTask = todayTask || rankNextUpSameDay(tomorrowTasks)[0] || null;
   if (!nextTask) return { task: null, window: null, reason: 'You\'re caught up. Nothing needs to move forward right now.' };
   const dateKey = taskDisplayDate(nextTask);
   const time = taskDisplayTime(nextTask);
@@ -4277,7 +4281,7 @@ async function handleCalendarImport(event) {
       // it on every calendar refresh just because the upstream feed still
       // contains the same UID.
       if (identities.some(identity => localDeletedTaskIdentities.has(identity))) return false;
-      const existing = state.tasks.find(task => keys.includes(task.idempotencyKey));
+      const existing = state.tasks.find(task => keys.includes(task.idempotencyKey) || matchesImportedCalendarTask(task, calendarEvent.uid, feedId));
       if (!existing) return true;
       const repairedTask = calendarTaskFromEvent(calendarEvent, existing, feedId);
       if (repairedTask.changed) {

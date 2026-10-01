@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { addDays, assignUniqueClassHues, assessmentIdempotencyKey, assessmentSessionIdentity, assessmentTitle, assignmentTypeLabel, buildPlanningState, cleanCaptureInput, cleanTaskTitle, deadlineRisk, expandRecurringTask, findOpenSlot, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankRecommendations, recommendNextAction, recordCompletion, removeClassFromTitle, resolveDatePhrase, resolveDuration, resolvePriority, resolveStudyDates, resolveTimePhrase, scheduleOriginOf, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, setTaskExecution, splitCaptureInput, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, updateStreak, urgencyScore, INTENTS } from '../src/core.js';
 import { inferSchoologyClassHint, isNonAcademicSchoologyEvent, parseICal } from '../src/ical.js';
 import { getNextBestAction, replanAssessmentSessions } from '../src/core.js';
+import { rankNextUpSameDay } from '../src/core.js';
 
 const fixedNow = new Date(2026, 7, 25, 17, 30);
 
@@ -870,6 +871,23 @@ test('execution sorting is chronological and deterministic for equal starts', ()
   ];
   assert.deepEqual([...tasks].sort(taskSort).map(task => task.id), ['math', 'biology', 'history']);
   assert.deepEqual([...tasks].sort(taskSort).map(task => task.id), [...tasks].sort(taskSort).map(task => task.id));
+});
+
+test('Next up prioritizes tests and quizzes before priority and duration', () => {
+  const tasks = [
+    { id: 'urgent-homework', priority: 4, duration: 120, scheduledDate: '2026-08-25', scheduledTime: '16:00' },
+    { id: 'quiz', assignmentType: 'quiz', priority: 1, duration: 20, scheduledDate: '2026-08-25', scheduledTime: '18:00' },
+    { id: 'test', type: 'assessment', priority: 1, duration: 30, scheduledDate: '2026-08-25', scheduledTime: '19:00' }
+  ];
+  assert.deepEqual(rankNextUpSameDay(tasks).map(task => task.id), ['test', 'quiz', 'urgent-homework']);
+});
+
+test('Next up uses the longest task when priority and assessment status tie', () => {
+  const tasks = [
+    { id: 'short', priority: 2, duration: 20, scheduledDate: '2026-08-25', scheduledTime: '16:00' },
+    { id: 'long', priority: 2, duration: 90, scheduledDate: '2026-08-25', scheduledTime: '17:00' }
+  ];
+  assert.equal(rankNextUpSameDay(tasks)[0].id, 'long');
 });
 
 test('duration is a contiguous-window requirement', () => {

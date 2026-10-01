@@ -192,6 +192,16 @@ export function preserveImportedCalendarTask(existing, incoming) {
   return { task: changed ? { ...existing, idempotencyKey: incoming.idempotencyKey } : existing, changed };
 }
 
+// Provider UIDs are stable, but early imports stored them as ical:<uid>
+// while newer imports scope them to the feed as ical:<feed>:<uid>. Treat the
+// legacy key as the same event during reconciliation; otherwise a refresh
+// creates a second provider row and the user's local edits appear to vanish.
+export function matchesImportedCalendarTask(task, uid, feedId = 'file') {
+  if (!task || !uid) return false;
+  const currentKey = String(task.idempotencyKey || '');
+  return currentKey === `ical:${feedId}:${uid}` || currentKey === `ical:${uid}`;
+}
+
 // Class matching is import-owned until the user explicitly changes it in the
 // task drawer. This lets a later Schoology resync repair legacy rows that were
 // created without a class, while preserving a deliberate user override.

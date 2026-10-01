@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activeUserForToken, buildCalendar, escapeIcsText, exportableTask, recurrenceRule } from '../api/calendar-export.js';
-import { filterCalendarEvents, isPastImportedOneTimeTask, preserveImportedCalendarTask, repairImportedCalendarClass } from '../src/ical.js';
+import { filterCalendarEvents, isPastImportedOneTimeTask, matchesImportedCalendarTask, preserveImportedCalendarTask, repairImportedCalendarClass } from '../src/ical.js';
 import { deduplicateTaskRecords } from '../src/task-merge.js';
 
 const baseTask = (overrides = {}) => ({
@@ -94,6 +94,12 @@ test('resync preserves manual edits to imported tasks while repairing only legac
   const result = preserveImportedCalendarTask(edited, incoming);
   assert.equal(result.changed, true);
   assert.deepEqual(result.task, { ...edited, idempotencyKey: 'ical:todoist:uid' });
+});
+
+test('calendar refresh matches legacy and feed-scoped identities before recreating an edited event', () => {
+  assert.equal(matchesImportedCalendarTask({ idempotencyKey: 'ical:provider-event-1' }, 'provider-event-1', 'todoist'), true);
+  assert.equal(matchesImportedCalendarTask({ idempotencyKey: 'ical:schoology:provider-event-1' }, 'provider-event-1', 'schoology'), true);
+  assert.equal(matchesImportedCalendarTask({ idempotencyKey: 'ical:other-feed:provider-event-1' }, 'provider-event-1', 'todoist'), false);
 });
 
 test('calendar resync repairs an empty or stale auto-matched class', () => {
