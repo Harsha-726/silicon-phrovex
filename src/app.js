@@ -105,6 +105,7 @@ function saveStudyDraft() {
 let voiceState = 'idle';
 const SYNC_INTERVAL_MS = 3_000;
 const CLOCK_REFRESH_INTERVAL_MS = 5_000;
+const DEFAULT_ONBOARDING_CLASSES = ['Biology', 'Chemistry', 'English'];
 const STUDY_MOTION_DURATION_MS = 5_800;
 // Recurring work has an infinite mathematical horizon. The UI must never
 // materialize that horizon into millions of occurrence objects just because
@@ -420,6 +421,14 @@ function checkDueNotifications(now = new Date()) {
   });
 }
 
+// The clock interval is only a fallback. A task can be created, synced, or
+// become visible while the interval is throttled by Chrome, so reminder state
+// must be reconciled at every lifecycle boundary as well.
+function reconcileDueNotifications() {
+  checkDueNotifications(new Date());
+  void deliverPendingBrowserNotifications();
+}
+
 function renderNotificationPanel() {
   if (!notificationsOpen) return '';
   const notifications = Array.isArray(state.profile.notifications) ? state.profile.notifications : [];
@@ -624,6 +633,22 @@ function markTaskDeletedIdOnly(id) {
 function markTaskSyncRetry(task) { if (task) { task.syncRetryAfter = new Date(Date.now() + 5 * 60 * 1000).toISOString(); saveState(); } }
 function persistCreatedTask(task) { return taskPersistence.persist(task); }
 function normalizeClassName(value) { return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 80); }
+function ensureOnboardingDefaults() {
+  if (state.profile.onboardingComplete || state.profile.onboardingDefaultsSeeded) return;
+  // Seed only the first-run class list. Once the user has removed a default
+  // (including all defaults), the marker prevents a later render or refresh
+  // from silently bringing it back.
+  if (state.classes.length) {
+    state.profile.onboardingDefaultsSeeded = true;
+    saveState();
+    return;
+  }
+  state.classes = [...DEFAULT_ONBOARDING_CLASSES];
+  state.profile.classPreferences = Object.fromEntries(DEFAULT_ONBOARDING_CLASSES.map(name => [name, defaultClassPreference()]));
+  state.profile.onboardingDefaultsSeeded = true;
+  ensureClassColors();
+  saveState();
+}
 function collectOnboardingClassPreferences() {
   state.profile.classPreferences ||= {};
   document.querySelectorAll('.onboarding-class-sessions').forEach(input => {
@@ -1706,7 +1731,8 @@ function saveOnboardingPreferencesFromForm() {
 }
 
 function renderOnboarding() {
-  const classFields = state.classes.map(name => { const preference = state.profile.classPreferences?.[name] || defaultClassPreference(); return `<div class="class-preference"><strong>${escapeHtml(name)}</strong><label>Sessions/week<input class="onboarding-class-sessions" data-class="${escapeHtml(name)}" type="number" min="1" max="14" value="${preference.sessionsPerWeek ?? 2}"/></label><label>Length<select class="onboarding-class-length" data-class="${escapeHtml(name)}"><option value="30" ${preference.sessionLength === 30 ? 'selected' : ''}>30 min</option><option value="45" ${(!preference.sessionLength || preference.sessionLength === 45) ? 'selected' : ''}>45 min</option><option value="60" ${preference.sessionLength === 60 ? 'selected' : ''}>1 hour</option></select></label></div>`; }).join('');
+  ensureOnboardingDefaults();
+  const classFields = state.classes.map(name => { const preference = state.profile.classPreferences?.[name] || defaultClassPreference(); return `<div class="class-preference"><strong>${escapeHtml(name)}</strong><label>Sessions/week<input class="onboarding-class-sessions" data-class="${escapeHtml(name)}" type="number" min="1" max="14" value="${preference.sessionsPerWeek ?? 2}"/></label><label>Length<select class="onboarding-class-length" data-class="${escapeHtml(name)}"><option value="30" ${preference.sessionLength === 30 ? 'selected' : ''}>30 min</option><option value="45" ${(!preference.sessionLength || preference.sessionLength === 45) ? 'selected' : ''}>45 min</option><option value="60" ${preference.sessionLength === 60 ? 'selected' : ''}>1 hour</option></select></label><button class="danger-button" type="button" data-action="remove-onboarding-class" data-class="${escapeHtml(name)}">Remove</button></div>`; }).join('');
   const step = onboardingStep;
   const stepContent = step === 0
     ? `<div class="onboarding-welcome"><div class="onboarding-tour-icon">✦</div><div class="eyebrow">Welcome to Silico</div><h2>Let’s set up your planning space.</h2><p class="onboarding-copy">This short tour shows you how Silico turns assignments and commitments into a schedule you can actually use.</p><div class="onboarding-tour-cards"><div><strong>Capture</strong><span>Type tasks naturally, with dates and times when you know them.</span></div><div><strong>Protect</strong><span>Imported calendar events stay fixed while flexible work moves around them.</span></div><div><strong>Focus</strong><span>Today and Next up show the next real execution, not a distant deadline.</span></div></div><button class="primary-button" type="button" data-action="onboarding-next">Start the tour <span>→</span></button></div>`
@@ -2821,6 +2847,20 @@ function handleAction(action, id) {
     offerUndo(`${name} added.`, previousState);
     return;
   }
+  if (action === 'remove-onboarding-class') {
+    collectOnboardingClassPreferences();
+    const name = normalizeClassName(id);
+    if (!name || !state.classes.some(item => item === name)) return;
+    const previousState = stateSnapshot();
+    state.classes = state.classes.filter(item => item !== name);
+    delete state.profile.classPreferences?.[name];
+    delete state.profile.classColors?.[normalizeClassColorKey(name)];
+    ensureClassColors();
+    saveState();
+    renderOnboarding();
+    offerUndo(`${name} removed.`, previousState);
+    return;
+  }
   if (action === 'add-class') {
     const input = document.querySelector('#new-class-name');
     const name = normalizeClassName(input?.value);
@@ -3601,6 +3641,7 @@ async function createStudyPlanFromCommand(command, metadata = {}) {
       try { const saved = await persistCreatedTask(session); Object.assign(session, saved); } catch { persistenceWarning = true; markTaskSyncRetry(session); }
     }));
   }
+  reconcileDueNotifications();
   return { studyPlan: true, task: assessment || null, assessmentCreated, sessions, persistenceWarning, command };
 }
 
@@ -3672,6 +3713,7 @@ async function createTaskFromCommand(command, metadata = {}) {
     Object.assign(task, createdTask);
     if (!persistenceWarning) delete task.syncRetryAfter;
   }
+  reconcileDueNotifications();
   // An assessment is the anchor for its class study plan. Generate the
   // configured number of preparation sessions immediately so creating a
   // test/exam never leaves the student with an assessment and no study time.
@@ -4446,7 +4488,8 @@ document.addEventListener('click', event => {
   routePublicNavigation();
 });
 window.addEventListener('online', () => { void syncRemoteState(); });
-window.addEventListener('visibilitychange', () => { if (!document.hidden) void syncRemoteState(); });
+window.addEventListener('focus', () => { reconcileDueNotifications(); if (!document.hidden) void syncRemoteState(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { reconcileDueNotifications(); void syncRemoteState(); } });
 if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', event => {
   if (event.data?.type !== 'silico-notification-click') return;
   const taskId = event.data.taskId;
@@ -4464,7 +4507,7 @@ window.addEventListener('silico-task-not-found', event => {
   void syncRemoteState({ includeCalendar: false });
 });
 function refreshTimeSensitiveView() {
-  checkDueNotifications(new Date());
+  reconcileDueNotifications();
   if (document.hidden) return;
   if (view !== 'today' || isProcessingCapture || isEditingControl()) return;
   const next = nextPlanningAction();
@@ -4560,6 +4603,23 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
       if (deletedTaskIds.has(id) || (taskIdentity(localTask) && localDeletedTaskIdentities.has(taskIdentity(localTask)))) continue;
       if (recoveredTaskIds.has(id)) continue;
       const remoteTask = byId.get(id);
+      // A POST may have returned a UUID while its create operation is still
+      // settling. Do not let a concurrently fetched snapshot that predates
+      // that commit tombstone the task or remove it from the merged view.
+      if (taskPersistence.hasPending(id)) {
+        byId.set(id, localTask);
+        continue;
+      }
+      const localCreatedAt = Date.parse(localTask.createdAt || '');
+      const createdDuringSync = Number.isFinite(localCreatedAt) && Date.now() - localCreatedAt < 60_000;
+      if (!remoteTask && isRemoteTaskId(id) && createdDuringSync) {
+        // The create response can win the race with the GET snapshot. Keep
+        // the confirmed local row visible until the next reconciliation sees
+        // the committed database row instead of turning eventual consistency
+        // into a false deletion.
+        byId.set(id, localTask);
+        continue;
+      }
       // The remote task list is authoritative for database-backed records.
       // Keeping a missing UUID locally creates a ghost that renders normally
       // but can never be PATCHed, producing repeated 404s when interacted
@@ -4621,6 +4681,7 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
     saveState();
     // Make task/profile changes visible as soon as the fast remote merge is
     // complete. Calendar feeds are external and can be considerably slower.
+    reconcileDueNotifications();
     renderBackgroundState();
     maybeCelebrateStreak();
     await teamSyncPromise.catch(() => {});

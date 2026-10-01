@@ -122,6 +122,23 @@ test('study-for-test requests plan study without creating an assessment', () => 
   assert.equal(parseCapture('study for chemestry exam Sep 4', fixedNow).dueDate, '2026-09-04');
 });
 
+test('multi-day study-for-test requests anchor the physical assessment after preparation', () => {
+  const command = parseCapture('I have to study for x test on sat and sun', fixedNow);
+  assert.equal(command.intent, INTENTS.STUDY_PLANNING);
+  assert.deepEqual(command.studyDates, ['2026-08-29', '2026-08-30']);
+  assert.equal(command.dueDate, '2026-08-31');
+  assert.equal(assessmentTitle(command), 'X Test');
+  const sessions = planStudySessionsOnDates({ id: 'x-test', title: 'X Test', dueDate: command.dueDate, priority: 1 }, command.studyDates, [], { now: fixedNow, sessionLength: 45, schoolDays: [] });
+  assert.deepEqual(sessions.map(session => session.dueDate), command.studyDates);
+});
+
+test('date parser keeps ordinary homework on its requested weekday', () => {
+  const command = parseCapture('some hw task on sat', fixedNow);
+  const task = makeTask(command, { datePinned: true, userScheduled: true });
+  assert.equal(task.title, 'Some Homework Task');
+  assert.equal(taskExecution(task).date, '2026-08-29');
+});
+
 test('assessment study sessions use the class count in the final days before the exam', () => {
   const assessment = { id: 'chem-final', idempotencyKey: 'chem-final-key', className: 'Chemistry', title: 'Chemistry Test', dueDate: '2026-09-08', priority: 1 };
   const sessions = planStudySessions(assessment, [], {

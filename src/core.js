@@ -667,7 +667,13 @@ export function parseCapture(input, now = new Date()) {
   const recurrence = recurrenceFromText(text);
   const subject = extractSubject(text);
   const studyAssessmentRequest = /\b(?:study|review|prepare|prep|practice)\b.*\b(?:for|before)\b.*\b(?:test|exam|quiz|assessment)\b/.test(lower);
-  const studyDates = !studyAssessmentRequest && /\b(?:study|review|prepare|prep|practice)\b/.test(lower) ? resolveStudyDates(text, now) : [];
+  const mentionedStudyDates = /\b(?:study|review|prepare|prep|practice)\b/.test(lower) ? resolveStudyDates(text, now) : [];
+  // “Study for the X test on Saturday and Sunday” names preparation dates,
+  // not an assessment deadline on Sunday. When no existing assessment is
+  // available, the physical assessment is placed on the next day after the
+  // final requested study date.
+  const studyDates = mentionedStudyDates.length > 1 ? mentionedStudyDates : (!studyAssessmentRequest ? mentionedStudyDates : []);
+  const inferredStudyAssessmentDate = studyAssessmentRequest && studyDates.length > 1 ? addDays(studyDates[studyDates.length - 1], 1) : null;
   const dueDates = !studyDates.length && !studyAssessmentRequest && resolveStudyDates(text, now).length > 1 && /\b(?:sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\b\s*(?:,|and)\s*\b(?:sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\b/i.test(lower) ? resolveStudyDates(text, now) : [];
   const multiDateTitle = dueDates.length > 1 ? cleanTaskTitle(text).replace(/\band\b/gi, '').replace(/\s{2,}/g, ' ').trim() : null;
   if (/what(?:'s| is)?[ ]+(?:my|the)[ ]+day[ ]+look[ ]+like|what do i need to do[ ]+(?:today|tonight)|what(?:'s| is)?[ ]+going[ ]+on/.test(lower)) return { intent: INTENTS.QUERY_DAY_SUMMARY, raw: text, duration, subject, title: cleanTaskTitle(text) };
@@ -685,7 +691,7 @@ export function parseCapture(input, now = new Date()) {
   // Keep this before the generic test/exam rule so it cannot create a test
   // named "Study for Chemistry Test".
   if (studyAssessmentRequest || studyDates.length) {
-    return { intent: INTENTS.STUDY_PLANNING, title: cleanStudyTitle(text, subject), subject, dueDate: studyAssessmentRequest ? date : null, dueDateExplicit: dateSpecified, studyDates, dueTime: time, duration: duration || 45, priority: priority || 1, raw: text };
+    return { intent: INTENTS.STUDY_PLANNING, title: cleanStudyTitle(text, subject), subject, dueDate: inferredStudyAssessmentDate || (studyAssessmentRequest ? date : null), dueDateExplicit: Boolean(inferredStudyAssessmentDate || dateSpecified), studyDates, dueTime: time, duration: duration || 45, priority: priority || 1, raw: text };
   }
   if (/^(?:move|reschedule|push)\b/.test(lower) || /\b(?:got|was)\s+moved\b|\bdeadline\s+(?:moved|changed)\b/.test(lower)) return { intent: INTENTS.RESCHEDULE_TASK, title: cleanTaskTitle(text), subject, dueDate: date, dueDateExplicit: dateSpecified, dueTime: time, raw: text };
   if (/\btest\b|\bexam\b|\bquiz\b|assessment/.test(lower) && date) return { intent: INTENTS.CREATE_ASSESSMENT, title: cleanTaskTitle(text), subject, dueDate: date, dueDateExplicit: dateSpecified, dueTime: time, duration: duration || 45, priority: priority || 1, raw: text };
@@ -705,9 +711,22 @@ export function assessmentIdempotencyKey(command) {
 }
 
 export function assessmentTitle(command = {}, className) {
-  if (!className) return command.title || 'Assessment';
   const source = cleanCaptureInput(command.raw || command.title || '');
   const kind = source.match(/\b(test|exam|quiz|assessment)\b/i)?.[1] || 'Test';
+  if (!className) {
+    // A study request can be the only description of an assessment. Do not
+    // persist parser glue such as “study for … on and” as the physical test's
+    // title when there is no class to provide the anchor name.
+    const detail = cleanTaskTitle(source)
+      .replace(/^\s*(?:study|review|prepare|prep|practice)\s+(?:for|before)\s+/i, '')
+      .replace(/\b(test|exam|quiz|assessment)\b/gi, '')
+      .replace(/\bon\s+and\b/gi, '')
+      .replace(/\band\b/gi, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    const label = kind.charAt(0).toUpperCase() + kind.slice(1).toLowerCase();
+    return `${detail ? `${titleCaseTaskTitle(detail)} ` : ''}${label}`.trim() || 'Assessment';
+  }
   const subjectTokens = new Set(classTokens(command.subject));
   const subjectFamily = classFamily(command.subject) || classFamily(source);
   const detail = cleanTaskTitle(source).replace(/\bon\s*$/i, '').replace(/\b(test|exam|quiz|assessment)\b/gi, '').split(/\s+/).filter(Boolean).filter(word => !subjectTokens.has(classAliases[classKey(word)] || classKey(word)) && classFamily(word) !== subjectFamily).join(' ').trim();
