@@ -188,15 +188,18 @@ const calendarFeedDefinitions = [
 ];
 
 function calendarFeeds() {
-  const stored = Array.isArray(state.profile.calendarFeeds) ? state.profile.calendarFeeds : [];
+  const stored = Array.isArray(state.profile.calendarFeeds) ? state.profile.calendarFeeds : state.profile.calendarFeeds && typeof state.profile.calendarFeeds === 'object' ? Object.entries(state.profile.calendarFeeds).map(([id, feed]) => ({ id, ...(feed && typeof feed === 'object' ? feed : { url: feed }) })) : [];
+  const integrations = state.profile.integrations && typeof state.profile.integrations === 'object' ? state.profile.integrations : {};
   return calendarFeedDefinitions.map(definition => {
     const saved = stored.find(feed => feed?.id === definition.id) || {};
+    const nested = integrations[definition.id] || integrations[`${definition.id}Feed`] || integrations[`${definition.id}Calendar`] || {};
     const legacySchoology = definition.id === 'schoology' && !saved.url ? {
       url: state.profile.calendarFeedUrl || '',
       className: state.profile.calendarFeedClassName || '',
       lastSyncedAt: state.profile.calendarFeedLastSyncedAt || null
     } : {};
-    return { ...definition, ...legacySchoology, ...saved, url: typeof (saved.url ?? legacySchoology.url) === 'string' ? (saved.url ?? legacySchoology.url) : '', className: typeof (saved.className ?? legacySchoology.className) === 'string' ? (saved.className ?? legacySchoology.className) : '', lastSyncedAt: saved.lastSyncedAt ?? legacySchoology.lastSyncedAt ?? null };
+    const nestedRecord = nested && typeof nested === 'object' ? { url: nested.url || nested.feedUrl || nested.icalUrl || nested.calendarUrl, className: nested.className || nested.defaultClass || nested.calendarClassName, lastSyncedAt: nested.lastSyncedAt || nested.last_synced_at } : { url: typeof nested === 'string' ? nested : '' };
+    return { ...definition, ...legacySchoology, ...nestedRecord, ...saved, url: typeof (saved.url ?? nestedRecord.url ?? legacySchoology.url) === 'string' ? (saved.url ?? nestedRecord.url ?? legacySchoology.url) : '', className: typeof (saved.className ?? nestedRecord.className ?? legacySchoology.className) === 'string' ? (saved.className ?? nestedRecord.className ?? legacySchoology.className) : '', lastSyncedAt: saved.lastSyncedAt ?? nestedRecord.lastSyncedAt ?? legacySchoology.lastSyncedAt ?? null };
   });
 }
 
@@ -500,6 +503,20 @@ function persistProfile() {
 }
 function defaultClassPreference() { return { sessionsPerWeek: 2, sessionLength: 45 }; }
 function classAllocationValue(value) { const number = Number(value); return Number.isFinite(number) ? Math.max(0, Math.min(30, Math.round(number))) : 0; }
+function normalizeClassPreference(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return { ...source, sessionsPerWeek: Number(source.sessionsPerWeek ?? source.sessions_per_week ?? source.sessions ?? 2) || 2, sessionLength: Number(source.sessionLength ?? source.session_length ?? source.sessionLengthMinutes ?? source.session_length_minutes ?? 45) || 45 };
+}
+function normalizeClassPreferences(classes = []) {
+  const raw = state.profile.classPreferences && typeof state.profile.classPreferences === 'object' ? state.profile.classPreferences : {};
+  const normalized = {};
+  Object.entries(raw).forEach(([name, preference]) => {
+    const canonical = classes.find(item => normalizeClassColorKey(item) === normalizeClassColorKey(name)) || normalizeClassName(name);
+    if (canonical) normalized[canonical] = normalizeClassPreference(preference);
+  });
+  classes.forEach(name => { normalized[name] ||= defaultClassPreference(); });
+  state.profile.classPreferences = normalized;
+}
 function updateClassAllocation(input) {
   const name = input?.dataset.class;
   if (!name) return;
@@ -520,7 +537,8 @@ function normalizeState() {
   state.profile.calendarFeeds = calendarFeeds().map(feed => ({ id: feed.id, url: feed.url, className: feed.className, lastSyncedAt: feed.lastSyncedAt }));
   state.tasks = (Array.isArray(state.tasks) ? state.tasks : []).map((task, index) => normalizeTaskRecord(task, index)).filter(Boolean);
   repairEventReminderSchedules();
-  state.classes = uniqueLabels(state.classes);
+  state.classes = uniqueLabels([...state.classes, ...state.tasks.map(task => task.className).filter(Boolean)]);
+  normalizeClassPreferences(state.classes);
   state.projects = uniqueLabels(state.projects);
   ensureClassColors();
   localDeletedTaskIds.clear();
@@ -4581,8 +4599,10 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
       const localGamification = state.profile.gamification || {};
       state.profile = { ...state.profile, ...profileSettings, displayName: typeof remoteProfile.profile?.display_name === 'string' ? remoteProfile.profile.display_name : state.profile.displayName, onboardingComplete: state.profile.onboardingComplete === true || Boolean(remoteProfile.profile?.onboarding_complete), classPreferences: { ...state.profile.classPreferences, ...(profileSettings.classPreferences || {}) } };
       state.profile.gamification = mergeGamification(profileSettings.gamification || {}, localGamification);
-      if (Array.isArray(remoteClasses)) state.classes = remoteClasses.filter(name => typeof name === 'string' && name.trim()).map(normalizeClassName);
+      if (Array.isArray(remoteClasses)) state.classes = uniqueLabels([...state.classes, ...remoteClasses, ...state.tasks.map(task => task.className).filter(Boolean)]);
       if (Array.isArray(remoteProjects)) state.projects = remoteProjects.filter(name => typeof name === 'string' && name.trim()).map(normalizeClassName);
+      normalizeClassPreferences(state.classes);
+      state.profile.calendarFeeds = calendarFeeds().map(feed => ({ id: feed.id, url: feed.url, className: feed.className, lastSyncedAt: feed.lastSyncedAt }));
       ensureClassColors();
     }
     gamificationChanged = registerDailyVisit();

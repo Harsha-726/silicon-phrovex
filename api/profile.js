@@ -17,6 +17,74 @@ function mergeBooleanMap(existing, incoming) {
   return Object.fromEntries([...new Set([...Object.keys(current), ...Object.keys(next)])].filter(key => Boolean(current[key]) || Boolean(next[key])).map(key => [key, true]));
 }
 
+function firstString(object, keys) {
+  for (const key of keys) if (typeof object?.[key] === 'string' && object[key].trim()) return object[key].trim();
+  return '';
+}
+function normalizeFeedRecord(id, value) {
+  if (typeof value === 'string') return { id, url: value.trim(), className: '', lastSyncedAt: null };
+  const source = objectValue(value);
+  return {
+    id,
+    url: firstString(source, ['url', 'feedUrl', 'icalUrl', 'calendarUrl', 'ical_feed_url']),
+    className: firstString(source, ['className', 'class', 'defaultClass', 'calendarClassName']),
+    lastSyncedAt: firstString(source, ['lastSyncedAt', 'last_synced_at']) || null
+  };
+}
+function legacyFeedRecord(settings, integrations, id) {
+  const direct = normalizeFeedRecord(id, objectValue(settings.calendarFeeds)[id] || objectValue(integrations)[id]);
+  if (direct.url) return direct;
+  const suffix = id === 'schoology' ? 'Schoology' : 'Todoist';
+  const legacy = normalizeFeedRecord(id, {
+    url: settings[`${id}CalendarFeedUrl`] || settings[`${id}FeedUrl`] || settings[`calendarFeed${suffix}Url`] || settings[`${id}_calendar_feed_url`],
+    className: settings[`${id}CalendarFeedClassName`] || settings[`calendarFeed${suffix}ClassName`],
+    lastSyncedAt: settings[`${id}CalendarFeedLastSyncedAt`] || settings[`calendarFeed${suffix}LastSyncedAt`]
+  });
+  if (legacy.url) return legacy;
+  const integration = objectValue(integrations);
+  const candidates = [integration[`${id}Feed`], integration[`${id}Calendar`], integration[`${id}_ical`], integration[`${id}_calendar`]];
+  for (const candidate of candidates) {
+    const result = normalizeFeedRecord(id, candidate);
+    if (result.url) return result;
+  }
+  return { id, url: '', className: '', lastSyncedAt: null };
+}
+function normalizeClassPreference(value) {
+  const source = objectValue(value);
+  return {
+    ...source,
+    sessionsPerWeek: source.sessionsPerWeek ?? source.sessions_per_week ?? source.sessions ?? 2,
+    sessionLength: source.sessionLength ?? source.session_length ?? source.sessionLengthMinutes ?? source.session_length_minutes ?? 45
+  };
+}
+
+// Older profile rows used nested integration names and snake_case allocation
+// fields. Normalize them at the authenticated API boundary so the browser has
+// one stable shape and never has to guess which historical schema is live.
+export function normalizeProfileSettingsForClient(rawSettings = {}) {
+  const settings = objectValue(rawSettings);
+  const integrations = objectValue(settings.integrations);
+  const storedFeeds = Array.isArray(settings.calendarFeeds) ? settings.calendarFeeds : objectValue(settings.calendarFeeds);
+  const normalizedFeeds = ['schoology', 'todoist'].map(id => {
+    const direct = Array.isArray(storedFeeds) ? storedFeeds.find(feed => feed?.id === id) : storedFeeds[id];
+    const feed = normalizeFeedRecord(id, direct);
+    return feed.url ? feed : legacyFeedRecord(settings, integrations, id);
+  });
+  const rawPreferences = settings.classPreferences || settings.classAllocations || settings.studyAllocations || settings.class_preferences || {};
+  const classPreferences = Object.fromEntries(Object.entries(objectValue(rawPreferences)).map(([name, preference]) => [name, normalizeClassPreference(preference)]));
+  const classes = [...new Set([
+    ...(Array.isArray(settings.classes) ? settings.classes : []),
+    ...(Array.isArray(settings.classNames) ? settings.classNames : []),
+    ...Object.keys(classPreferences)
+  ].filter(name => typeof name === 'string' && name.trim()).map(name => name.trim()))];
+  const sanitized = { ...settings, classes, classPreferences, calendarFeeds: normalizedFeeds };
+  delete sanitized.integrations;
+  delete sanitized.classAllocations;
+  delete sanitized.studyAllocations;
+  delete sanitized.class_preferences;
+  return sanitized;
+}
+
 // Profile settings are sent by every signed-in device. A device can be offline
 // or holding an old cache, so a shallow JSON merge is unsafe for append-only
 // gamification data: the stale device would erase days, XP awards, or streak
@@ -57,8 +125,7 @@ function requestBody(request) {
 
 function publicProfile(row) {
   if (!row) return row;
-  const settings = row.settings && typeof row.settings === 'object' ? { ...row.settings } : row.settings;
-  if (settings && typeof settings === 'object') delete settings.integrations;
+  const settings = normalizeProfileSettingsForClient(row.settings);
   return settings === row.settings ? row : { ...row, settings };
 }
 
