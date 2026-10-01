@@ -1188,35 +1188,25 @@ function countCompleted() { return state.tasks.filter(task => task.status === 'c
 function renderProgressSummary() { const gamification = state.profile.gamification || {}; const todayTasks = tasksForDate(today()); const openToday = todayTasks.filter(task => task.status !== 'completed'); const completed = todayTasks.filter(task => task.status === 'completed').length; const minutes = openToday.reduce((total, task) => total + (Number(task.remainingDuration ?? task.duration) || 0), 0); return `<div class="progress-summary"><div><strong>${Math.floor(minutes / 60)}h ${minutes % 60}m</strong><span>planned today</span></div><div><strong>${completed}/${todayTasks.length || 0}</strong><span>completed today</span></div><div class="streak-summary-stat"><strong><span class="streak-summary-icon">${svgIcon('streak')}</span>${gamification.currentStreak || 0}</strong><span>day streak</span></div><div><strong>Level ${gamificationLevel(gamification.xp)}</strong><span>${gamification.xp || 0} XP</span></div></div>`; }
 
 function nextPlanningAction() {
-  const planning = currentPlanningState();
-  const todayKey = toDateKey(planning.currentTime);
-  // Recompute focus from the tasks that are actually on today, so completing
-  // one item cannot promote an unscheduled Wednesday deadline into the active
-  // slot while a nearer task still exists.
-  const todayTasks = tasksForDate(todayKey).filter(task => task.status !== 'completed');
-  const todayPlanning = buildPlanningState({ ...planning, tasks: todayTasks, currentTime: planning.currentTime });
-  const immediate = recommendNextAction(todayPlanning, { availableMinutes: Infinity, now: planning.currentTime, preferImmediate: true, horizonDays: 0 });
-  if (immediate.task) return immediate;
-
-  // If today is clear, “Next up” should still be useful—but it must point to
-  // the first actual future execution, never to whichever task won the
-  // seven-day planning score.
-  // Use the same date-expanded task view that Upcoming renders. Raw records
-  // can represent recurring work with an earlier anchor date, which makes a
-  // later Wednesday occurrence look like the next execution after today.
-  const nextPlanned = rangeTasks(addDays(todayKey, 1), addDays(todayKey, 30))
-    .filter(task => task.status !== 'completed' && task.type !== 'fixed_event')
-    .map(task => ({ task, dateKey: task.scheduledDate || task.dueDate, time: task.scheduledTime || task.dueTime }))
-    .filter(item => isDateKey(item.dateKey) && item.dateKey > todayKey)
-    .sort((left, right) => `${left.dateKey}T${left.time || '23:59'}`.localeCompare(`${right.dateKey}T${right.time || '23:59'}`) || taskSort(left.task, right.task))[0];
-  if (!nextPlanned) return immediate;
-  const duration = Number(nextPlanned.task.remainingDuration ?? nextPlanned.task.duration) || 30;
-  const start = nextPlanned.time ? dateAt(nextPlanned.dateKey, nextPlanned.time) : null;
+  // “Next up” is a navigation affordance, so it must use the same execution
+  // records and ordering the user can see in Today/Upcoming. The old path
+  // called the score-based recommendation engine here; that engine is right
+  // for “what should I work on?” but can intentionally prefer a higher-risk
+  // task over the earliest execution. That made the banner point at a task
+  // other than the first visible task.
+  const todayKey = today();
+  const todayTask = tasksForDate(todayKey).find(task => task.status !== 'completed');
+  const endDate = addDays(todayKey, Number(state.profile.inboxWindowDays ?? 30) || 30);
+  const nextTask = todayTask || nextUpcomingTask(rangeTasks(addDays(todayKey, 1), endDate));
+  if (!nextTask) return { task: null, window: null, reason: 'You\'re caught up. Nothing needs to move forward right now.' };
+  const dateKey = taskDisplayDate(nextTask);
+  const time = taskDisplayTime(nextTask);
+  const duration = Number(nextTask.remainingDuration ?? nextTask.duration) || 30;
+  const start = time && dateKey ? dateAt(dateKey, time) : null;
   return {
-    ...immediate,
-    task: nextPlanned.task,
-    window: start ? { dateKey: nextPlanned.dateKey, start: start.getHours() * 60 + start.getMinutes(), end: start.getHours() * 60 + start.getMinutes() + duration, duration, scheduled: true } : null,
-    reason: `You're caught up today. Your next planned work is ${nextPlanned.task.title}.`
+    task: nextTask,
+    window: start ? { dateKey, start: start.getHours() * 60 + start.getMinutes(), end: start.getHours() * 60 + start.getMinutes() + duration, duration, scheduled: true } : null,
+    reason: todayTask ? `Your next scheduled item is ${nextTask.title}.` : `You're caught up today. Your next planned work is ${nextTask.title}.`
   };
 }
 function renderPlanningPulse() {
