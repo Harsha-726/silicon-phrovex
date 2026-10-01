@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeCalendarFeedSettings, mergeGamificationSettings, mergeLearningProfilesIntoSettings, mergeOnboardingComplete, normalizeProfileSettingsForClient } from '../api/profile.js';
+import { mergeCalendarFeedSettings, mergeGamificationSettings, mergeLearningProfilesIntoSettings, mergeOnboardingComplete, mergeProjectSettings, normalizeProfileSettingsForClient } from '../api/profile.js';
 
 test('profile gamification merges append-only account history across devices', () => {
   const merged = mergeGamificationSettings(
@@ -97,4 +97,32 @@ test('profile writes preserve populated feeds from stale blank clients but honor
   assert.deepEqual(stale.calendarFeeds.map(feed => feed.url), ['webcal://schoology.example/feed', 'https://todoist.example/feed']);
   const removed = mergeCalendarFeedSettings(existing, { calendarFeeds: [{ id: 'schoology', url: '' }, { id: 'todoist', url: '' }], calendarFeedRemovals: ['todoist'] });
   assert.deepEqual(removed.calendarFeeds.map(feed => feed.url), ['webcal://schoology.example/feed', '']);
+});
+
+test('profile writes cannot erase projects from a stale device snapshot', () => {
+  const merged = mergeProjectSettings(
+    { projects: ['College applications', 'Robotics'], projectRemovals: [] },
+    { projects: [], projectRemovals: [] }
+  );
+  assert.deepEqual(merged.projects, ['College applications', 'Robotics']);
+});
+
+test('project deletion remains durable when another device sends an old project list', () => {
+  const merged = mergeProjectSettings(
+    { projects: ['College applications', 'Robotics'], projectRemovals: ['Robotics'] },
+    { projects: ['Robotics'], projectRemovals: [] }
+  );
+  assert.deepEqual(merged.projects, ['College applications']);
+  assert.deepEqual(merged.projectRemovals, ['Robotics']);
+});
+
+test('project settings are normalized for the client without duplicate labels', () => {
+  const settings = normalizeProfileSettingsForClient({ projects: [' Robotics ', 'robotics', ''], projectRemovals: [' College applications '] });
+  assert.deepEqual(settings.projects, ['Robotics']);
+  assert.deepEqual(settings.projectRemovals, ['College applications']);
+});
+
+test('normalized project settings hide durable deletions', () => {
+  const settings = normalizeProfileSettingsForClient({ projects: ['Robotics', 'College applications'], projectRemovals: ['robotics'] });
+  assert.deepEqual(settings.projects, ['College applications']);
 });

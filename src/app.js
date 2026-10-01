@@ -561,7 +561,15 @@ function normalizeState() {
   repairEventReminderSchedules();
   state.classes = uniqueLabels([...state.classes, ...state.tasks.map(task => task.className).filter(Boolean)]);
   normalizeClassPreferences(state.classes);
-  state.projects = uniqueLabels(state.projects);
+  state.profile.projectRemovals = uniqueLabels(state.profile.projectRemovals);
+  const removedProjectKeys = new Set(state.profile.projectRemovals.map(name => name.toLowerCase()));
+  // Projects are profile metadata, but task rows carry the same label. This
+  // recovery path repairs profiles whose project array was lost by an older
+  // last-writer-wins sync without inventing projects unrelated to the account.
+  state.projects = uniqueLabels([
+    ...state.projects,
+    ...state.tasks.map(task => task.project).filter(Boolean)
+  ]).filter(name => !removedProjectKeys.has(name.toLowerCase()));
   ensureClassColors();
   localDeletedTaskIds.clear();
   (Array.isArray(state.deletedTaskIds) ? state.deletedTaskIds : []).filter(id => typeof id === 'string' && id.length <= 120).forEach(id => localDeletedTaskIds.add(id));
@@ -2969,6 +2977,7 @@ function addProject() {
   if (!name) { showToast('Enter a project name.'); return; }
   if (state.projects.some(project => String(project || '').toLowerCase() === name.toLowerCase())) { showToast('That project already exists.'); return; }
   const previousState = stateSnapshot();
+  state.profile.projectRemovals = uniqueLabels(state.profile.projectRemovals).filter(project => project.toLowerCase() !== name.toLowerCase());
   state.projects.push(name);
   saveState();
   persistProfile();
@@ -3369,11 +3378,12 @@ function deleteProject(name) {
     const previousState = stateSnapshot();
     if (selectedCollection?.type === 'project' && selectedCollection.name === name) selectedCollection = null;
     state.projects = state.projects.filter(project => project !== name);
+    state.profile.projectRemovals = uniqueLabels([...(state.profile.projectRemovals || []), name]);
     const affectedTasks = state.tasks.filter(task => task.project === name);
     affectedTasks.forEach(task => { task.project = null; task.updatedAt = new Date().toISOString(); });
     saveState();
     persistProfile();
-    Promise.all(affectedTasks.map(task => repository?.update(task))).catch(() => showToast('Project removed locally, but some task labels could not sync.'));
+    persistTaskMutations(affectedTasks).catch(() => showToast('Project removed locally, but some task labels could not sync.'));
     render();
     offerUndo(`${name} deleted. Its tasks were kept.`, previousState);
   });
@@ -3486,7 +3496,11 @@ function saveDrawerTask(id) {
   selectedTaskId = null;
   saveState();
   const tasksToPersist = [...new Map([task, ...replannedAssessmentWork, ...durationReflowChanged, ...collisionChanged].map(item => [item.id, item])).values()];
-  const persist = repository ? Promise.all(tasksToPersist.map(item => repository.update(item))).then(savedTasks => { const savedTask = savedTasks.find(item => item?.id === task.id); if (savedTask) Object.assign(task, savedTask); Object.assign(task, reminderSettings); tasksToPersist.forEach(item => { delete item.syncRetryAfter; }); saveState(); }) : Promise.resolve();
+  // Use the same mutation barrier as drag/completion writes. A raw Promise.all
+  // here allows the interval sync to merge its stale GET response over this
+  // edit while PATCH is in flight, which is why edits could appear to save and
+  // then revert on the next refresh.
+  const persist = repository ? persistTaskMutations(tasksToPersist).then(() => { Object.assign(task, reminderSettings); tasksToPersist.forEach(item => { delete item.syncRetryAfter; }); saveState(); }) : Promise.resolve();
   persist.catch(() => { markTaskSyncRetry(task); showToast('Could not sync this edit yet. It is saved locally and will retry.'); }).then(() => syncEventReminder(task)).then(() => { if (!selectedTaskId) render(); }).catch(() => showToast('The event reminder could not be created yet.'));
   render();
   offerUndo('Task changes saved.', previousState);
@@ -4669,13 +4683,26 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
     let gamificationChanged = false;
     let profileRepairNeeded = false;
     if (remoteSettings && typeof remoteSettings === 'object' && profileVersionAtStart === profileMutationVersion) {
-      const { classes: remoteClasses, projects: remoteProjects, ...profileSettings } = remoteSettings;
+      const { classes: remoteClasses, projects: remoteProjects, projectRemovals: remoteProjectRemovals, ...profileSettings } = remoteSettings;
       const localGamification = state.profile.gamification || {};
       const localCalendarFeeds = calendarFeeds();
       state.profile = { ...state.profile, ...profileSettings, displayName: typeof remoteProfile.profile?.display_name === 'string' ? remoteProfile.profile.display_name : state.profile.displayName, onboardingComplete: state.profile.onboardingComplete === true || Boolean(remoteProfile.profile?.onboarding_complete), classPreferences: { ...state.profile.classPreferences, ...(profileSettings.classPreferences || {}) } };
       state.profile.gamification = mergeGamification(profileSettings.gamification || {}, localGamification);
       if (Array.isArray(remoteClasses)) state.classes = uniqueLabels([...state.classes, ...remoteClasses, ...state.tasks.map(task => task.className).filter(Boolean)]);
-      if (Array.isArray(remoteProjects)) state.projects = remoteProjects.filter(name => typeof name === 'string' && name.trim()).map(normalizeClassName);
+      if (Array.isArray(remoteProjects)) {
+        const localProjects = state.projects;
+        const localProjectRemovals = Array.isArray(state.profile.projectRemovals) ? state.profile.projectRemovals : [];
+        const projectRemovals = uniqueLabels([...localProjectRemovals, ...(Array.isArray(remoteProjectRemovals) ? remoteProjectRemovals : [])]);
+        const removedProjectKeys = new Set(projectRemovals.map(name => name.toLowerCase()));
+        state.profile.projectRemovals = projectRemovals;
+        state.projects = uniqueLabels([
+          ...localProjects,
+          ...remoteProjects,
+          ...state.tasks.map(task => task.project).filter(Boolean)
+        ]).filter(name => !removedProjectKeys.has(name.toLowerCase()));
+        profileRepairNeeded = state.projects.length !== uniqueLabels(remoteProjects).filter(name => !removedProjectKeys.has(name.toLowerCase())).length
+          || projectRemovals.length !== (Array.isArray(remoteProjectRemovals) ? uniqueLabels(remoteProjectRemovals).length : 0);
+      }
       normalizeClassPreferences(state.classes);
       state.profile.calendarFeeds = calendarFeeds().map(feed => {
         const local = localCalendarFeeds.find(item => item.id === feed.id);

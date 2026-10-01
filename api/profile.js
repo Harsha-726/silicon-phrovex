@@ -100,6 +100,39 @@ function normalizeClassName(value) {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 80) : '';
 }
 
+function normalizeProjectNames(value) {
+  const names = [];
+  const seen = new Set();
+  for (const candidate of Array.isArray(value) ? value : []) {
+    const name = normalizeClassName(candidate);
+    const key = name.toLowerCase();
+    if (name && !seen.has(key)) {
+      seen.add(key);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+export function mergeProjectSettings(existingSettings = {}, incomingSettings = {}) {
+  const existing = objectValue(existingSettings);
+  const incoming = objectValue(incomingSettings);
+  const removals = normalizeProjectNames([
+    ...(Array.isArray(existing.projectRemovals) ? existing.projectRemovals : []),
+    ...(Array.isArray(incoming.projectRemovals) ? incoming.projectRemovals : [])
+  ]);
+  const removedKeys = new Set(removals.map(name => name.toLowerCase()));
+  const projects = normalizeProjectNames([
+    ...(Array.isArray(existing.projects) ? existing.projects : []),
+    ...(Array.isArray(incoming.projects) ? incoming.projects : [])
+  ]).filter(name => !removedKeys.has(name.toLowerCase()));
+  return {
+    ...incoming,
+    projects,
+    projectRemovals: removals
+  };
+}
+
 export function mergeLearningProfilesIntoSettings(rawSettings, classRows = [], learningRows = []) {
   const settings = normalizeProfileSettingsForClient(rawSettings);
   const classNames = new Map((Array.isArray(classRows) ? classRows : []).map(row => [row?.id, normalizeClassName(row?.name)]).filter(([, name]) => name));
@@ -170,7 +203,16 @@ export function normalizeProfileSettingsForClient(rawSettings = {}) {
     ...(Array.isArray(settings.classNames) ? settings.classNames : []),
     ...Object.keys(classPreferences)
   ].filter(name => typeof name === 'string' && name.trim()).map(name => name.trim()))];
-  const sanitized = { ...settings, classes, classPreferences, calendarFeeds: normalizedFeeds };
+  const projectRemovals = normalizeProjectNames(settings.projectRemovals);
+  const removedProjectKeys = new Set(projectRemovals.map(name => name.toLowerCase()));
+  const sanitized = {
+    ...settings,
+    classes,
+    projects: normalizeProjectNames(settings.projects).filter(name => !removedProjectKeys.has(name.toLowerCase())),
+    projectRemovals,
+    classPreferences,
+    calendarFeeds: normalizedFeeds
+  };
   delete sanitized.integrations;
   delete sanitized.classAllocations;
   delete sanitized.studyAllocations;
@@ -216,6 +258,33 @@ function requestBody(request) {
   return {};
 }
 
+async function loadProjectRows(userId) {
+  try {
+    return await supabaseRequest(`projects?user_id=eq.${encodeURIComponent(userId)}&select=name&order=created_at.asc`);
+  } catch (error) {
+    // The profile JSON remains the compatibility store for deployments that
+    // predate the personal-project table. Do not make sign-in fail solely
+    // because that optional mirror is unavailable.
+    if (error.status === 404) return [];
+    throw error;
+  }
+}
+
+async function mirrorProjectRows(userId, settings) {
+  const normalized = mergeProjectSettings({}, settings);
+  const projects = normalized.projects.map(name => ({ user_id: userId, name }));
+  if (projects.length) {
+    await supabaseRequest('projects', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(projects)
+    });
+  }
+  for (const name of normalized.projectRemovals) {
+    await supabaseRequest(`projects?user_id=eq.${encodeURIComponent(userId)}&name=eq.${encodeURIComponent(name)}`, { method: 'DELETE' });
+  }
+}
+
 function publicProfile(row, classRows = [], learningRows = []) {
   if (!row) return row;
   const settings = mergeLearningProfilesIntoSettings(row.settings, classRows, learningRows);
@@ -232,7 +301,12 @@ export default async function handler(request, response) {
       const rows = await supabaseRequest(`profiles?${filter}&select=*`);
       const learning = await supabaseRequest(`learning_profiles?${filter}&select=*`);
       const classes = await supabaseRequest(`classes?${filter}&select=id,name`);
-      return json(response, 200, { profile: publicProfile(rows?.[0] || null, classes || [], learning || []), learningProfiles: learning || [] });
+      const projectRows = await loadProjectRows(auth.userId);
+      const profile = publicProfile(rows?.[0] || null, classes || [], learning || []);
+      if (profile?.settings) {
+        profile.settings = mergeProjectSettings(profile.settings, { projects: (projectRows || []).map(row => row?.name) });
+      }
+      return json(response, 200, { profile, learningProfiles: learning || [] });
     }
     if (request.method === 'PATCH' || request.method === 'POST') {
       await ensureProfile(auth.userId);
@@ -249,7 +323,7 @@ export default async function handler(request, response) {
       if (profile.onboarding_complete !== undefined) profile.onboarding_complete = mergeOnboardingComplete(currentProfile.onboarding_complete, profile.onboarding_complete);
       if (profile.settings !== undefined) {
         const existingSettings = objectValue(currentProfile.settings);
-        const mergedSettings = mergeCalendarFeedSettings(existingSettings, profile.settings);
+        const mergedSettings = mergeProjectSettings(existingSettings, mergeCalendarFeedSettings(existingSettings, profile.settings));
         profile.settings = { ...existingSettings, ...mergedSettings };
         atomicPatch.settings = mergedSettings;
         profile.settings.gamification = mergeGamificationSettings(existingSettings.gamification, profile.settings.gamification);
@@ -268,6 +342,7 @@ export default async function handler(request, response) {
         if (error.status !== 404) throw error;
         rows = await supabaseRequest('profiles', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' }, body: JSON.stringify([profile]) });
       }
+      if (profile.settings !== undefined) await mirrorProjectRows(auth.userId, profile.settings);
       let learningProfiles = [];
       for (const inputLearning of Array.isArray(body.learningProfiles) ? body.learningProfiles : []) {
         const learning = { user_id: auth.userId };
