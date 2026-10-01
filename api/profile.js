@@ -22,7 +22,7 @@ function firstString(object, keys) {
   return '';
 }
 function normalizeFeedRecord(id, value) {
-  if (typeof value === 'string') return { id, url: value.trim(), className: '', lastSyncedAt: null };
+  if (typeof value === 'string') return { id, url: /^(?:webcal|https?):\/\//i.test(value.trim()) ? value.trim() : '', className: '', lastSyncedAt: null };
   const source = objectValue(value);
   return {
     id,
@@ -33,20 +33,34 @@ function normalizeFeedRecord(id, value) {
 }
 function findNestedFeed(value, id, depth = 0) {
   if (depth > 4 || value === null || value === undefined) return null;
-  if (typeof value === 'string') return /^(?:webcal|https?):\/\//i.test(value.trim()) ? normalizeFeedRecord(id, value) : null;
-  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  return findNestedFeedMarked(value, id, depth, false);
+}
+function findNestedFeedMarked(value, id, depth, relevant) {
+  if (depth > 8 || value === null || value === undefined) return null;
+  if (typeof value === 'string') return relevant && /^(?:webcal|https?):\/\//i.test(value.trim()) ? normalizeFeedRecord(id, value) : null;
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const nested = findNestedFeedMarked(child, id, depth + 1, relevant);
+      if (nested?.url) return nested;
+    }
+    return null;
+  }
+  if (typeof value !== 'object') return null;
   const entries = Object.entries(value);
+  const objectMarker = entries.some(([key, child]) => ['provider', 'source', 'name', 'type', 'id'].includes(key.toLowerCase()) && String(child || '').trim().toLowerCase() === id);
+  const objectRelevant = relevant || objectMarker;
   for (const [key, child] of entries) {
     const lowerKey = key.toLowerCase();
-    if (lowerKey.includes(id) || /calendar|ical|feed/.test(lowerKey)) {
+    const keyRelevant = objectRelevant || lowerKey.includes(id);
+    if (keyRelevant) {
       const direct = normalizeFeedRecord(id, child);
       if (direct.url) return direct;
-      const nested = findNestedFeed(child, id, depth + 1);
+      const nested = findNestedFeedMarked(child, id, depth + 1, keyRelevant);
       if (nested?.url) return nested;
     }
   }
-  for (const child of entries.map(([, value]) => value)) {
-    const nested = findNestedFeed(child, id, depth + 1);
+  for (const [key, child] of entries) {
+    const nested = findNestedFeedMarked(child, id, depth + 1, objectRelevant || key.toLowerCase().includes(id));
     if (nested?.url) return nested;
   }
   return null;
@@ -80,6 +94,61 @@ function normalizeClassPreference(value) {
     sessionsPerWeek: source.sessionsPerWeek ?? source.sessions_per_week ?? source.sessions ?? 2,
     sessionLength: source.sessionLength ?? source.session_length ?? source.sessionLengthMinutes ?? source.session_length_minutes ?? 45
   };
+}
+
+function normalizeClassName(value) {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 80) : '';
+}
+
+export function mergeLearningProfilesIntoSettings(rawSettings, classRows = [], learningRows = []) {
+  const settings = normalizeProfileSettingsForClient(rawSettings);
+  const classNames = new Map((Array.isArray(classRows) ? classRows : []).map(row => [row?.id, normalizeClassName(row?.name)]).filter(([, name]) => name));
+  const rawPreferences = objectValue(rawSettings?.classPreferences || rawSettings?.classAllocations || rawSettings?.studyAllocations || rawSettings?.class_preferences);
+  const preferences = { ...settings.classPreferences };
+  for (const learning of Array.isArray(learningRows) ? learningRows : []) {
+    const name = classNames.get(learning?.class_id);
+    if (!name) continue;
+    const existingKey = Object.keys(rawPreferences).find(key => normalizeClassName(key).toLowerCase() === name.toLowerCase());
+    // Profile JSON is the canonical store after a user edits an allocation.
+    // Legacy learning_profiles rows only hydrate classes that have not been
+    // migrated into that store yet.
+    if (existingKey) continue;
+    preferences[name] = normalizeClassPreference({
+      session_length_minutes: learning.session_length_minutes,
+      sessions_per_week: learning.sessions_per_week,
+      preferred_methods: learning.preferred_methods,
+      preferred_start: learning.preferred_start,
+      latest_study_time: learning.latest_study_time
+    });
+  }
+  settings.classPreferences = preferences;
+  settings.classes = [...new Set([...settings.classes, ...Object.keys(preferences)])];
+  return settings;
+}
+
+function normalizedFeedMap(settings) {
+  const normalized = normalizeProfileSettingsForClient(settings);
+  return new Map(normalized.calendarFeeds.map(feed => [feed.id, feed]));
+}
+
+export function mergeCalendarFeedSettings(existingSettings, incomingSettings) {
+  const existing = objectValue(existingSettings);
+  const incoming = objectValue(incomingSettings);
+  const existingFeeds = normalizedFeedMap(existing);
+  const incomingFeeds = normalizedFeedMap(incoming);
+  const removed = new Set(Array.isArray(incoming.calendarFeedRemovals) ? incoming.calendarFeedRemovals : []);
+  const calendarFeeds = ['schoology', 'todoist'].map(id => {
+    if (removed.has(id)) return { id, url: '', className: '', lastSyncedAt: null };
+    const before = existingFeeds.get(id) || { id, url: '', className: '', lastSyncedAt: null };
+    const after = incomingFeeds.get(id) || { id, url: '', className: '', lastSyncedAt: null };
+    return {
+      id,
+      url: after.url || before.url || '',
+      className: after.className || before.className || '',
+      lastSyncedAt: after.lastSyncedAt || before.lastSyncedAt || null
+    };
+  });
+  return { ...incoming, calendarFeeds, calendarFeedRemovals: [] };
 }
 
 // Older profile rows used nested integration names and snake_case allocation
@@ -147,9 +216,9 @@ function requestBody(request) {
   return {};
 }
 
-function publicProfile(row) {
+function publicProfile(row, classRows = [], learningRows = []) {
   if (!row) return row;
-  const settings = normalizeProfileSettingsForClient(row.settings);
+  const settings = mergeLearningProfilesIntoSettings(row.settings, classRows, learningRows);
   return settings === row.settings ? row : { ...row, settings };
 }
 
@@ -162,7 +231,8 @@ export default async function handler(request, response) {
       await ensureProfile(auth.userId);
       const rows = await supabaseRequest(`profiles?${filter}&select=*`);
       const learning = await supabaseRequest(`learning_profiles?${filter}&select=*`);
-      return json(response, 200, { profile: publicProfile(rows?.[0] || null), learningProfiles: learning || [] });
+      const classes = await supabaseRequest(`classes?${filter}&select=id,name`);
+      return json(response, 200, { profile: publicProfile(rows?.[0] || null, classes || [], learning || []), learningProfiles: learning || [] });
     }
     if (request.method === 'PATCH' || request.method === 'POST') {
       await ensureProfile(auth.userId);
@@ -179,7 +249,9 @@ export default async function handler(request, response) {
       if (profile.onboarding_complete !== undefined) profile.onboarding_complete = mergeOnboardingComplete(currentProfile.onboarding_complete, profile.onboarding_complete);
       if (profile.settings !== undefined) {
         const existingSettings = objectValue(currentProfile.settings);
-        profile.settings = { ...existingSettings, ...profile.settings };
+        const mergedSettings = mergeCalendarFeedSettings(existingSettings, profile.settings);
+        profile.settings = { ...existingSettings, ...mergedSettings };
+        atomicPatch.settings = mergedSettings;
         profile.settings.gamification = mergeGamificationSettings(existingSettings.gamification, profile.settings.gamification);
         // A delete-all undo needs to remove the durable tombstone rather than
         // merely omit it from a merge patch.

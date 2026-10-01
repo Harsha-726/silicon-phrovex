@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeGamificationSettings, mergeOnboardingComplete, normalizeProfileSettingsForClient } from '../api/profile.js';
+import { mergeCalendarFeedSettings, mergeGamificationSettings, mergeLearningProfilesIntoSettings, mergeOnboardingComplete, normalizeProfileSettingsForClient } from '../api/profile.js';
 
 test('profile gamification merges append-only account history across devices', () => {
   const merged = mergeGamificationSettings(
@@ -64,4 +64,37 @@ test('profile settings recover feeds nested under historical calendar containers
   });
   assert.equal(settings.calendarFeeds.find(feed => feed.id === 'schoology').url, 'webcal://schoology.example/legacy');
   assert.equal(settings.calendarFeeds.find(feed => feed.id === 'todoist').url, 'https://todoist.example/legacy');
+});
+
+test('profile settings recover feeds stored in provider arrays', () => {
+  const settings = normalizeProfileSettingsForClient({
+    integrations: { providers: [
+      { provider: 'schoology', settings: { webcal_url: 'webcal://schoology.example/array' } },
+      { provider: 'todoist', settings: { feed_url: 'https://todoist.example/array' } }
+    ] }
+  });
+  assert.equal(settings.calendarFeeds.find(feed => feed.id === 'schoology').url, 'webcal://schoology.example/array');
+  assert.equal(settings.calendarFeeds.find(feed => feed.id === 'todoist').url, 'https://todoist.example/array');
+});
+
+test('legacy learning profiles hydrate allocations without overriding migrated profile settings', () => {
+  const settings = mergeLearningProfilesIntoSettings(
+    { classPreferences: { Chemistry: { sessionsPerWeek: 3, sessionLength: 45 } } },
+    [{ id: 'chemistry-id', name: 'Chemistry' }, { id: 'biology-id', name: 'Biology' }],
+    [
+      { class_id: 'chemistry-id', sessions_per_week: 7, session_length_minutes: 60 },
+      { class_id: 'biology-id', sessions_per_week: 4, session_length_minutes: 30 }
+    ]
+  );
+  assert.deepEqual(settings.classPreferences.Chemistry, { sessionsPerWeek: 3, sessionLength: 45 });
+  assert.equal(settings.classPreferences.Biology.sessionsPerWeek, 4);
+  assert.equal(settings.classPreferences.Biology.sessionLength, 30);
+});
+
+test('profile writes preserve populated feeds from stale blank clients but honor explicit removals', () => {
+  const existing = { calendarFeeds: [{ id: 'schoology', url: 'webcal://schoology.example/feed', className: 'Chemistry', lastSyncedAt: '2026-09-30T12:00:00.000Z' }, { id: 'todoist', url: 'https://todoist.example/feed', className: '', lastSyncedAt: null }] };
+  const stale = mergeCalendarFeedSettings(existing, { calendarFeeds: [{ id: 'schoology', url: '' }, { id: 'todoist', url: '' }] });
+  assert.deepEqual(stale.calendarFeeds.map(feed => feed.url), ['webcal://schoology.example/feed', 'https://todoist.example/feed']);
+  const removed = mergeCalendarFeedSettings(existing, { calendarFeeds: [{ id: 'schoology', url: '' }, { id: 'todoist', url: '' }], calendarFeedRemovals: ['todoist'] });
+  assert.deepEqual(removed.calendarFeeds.map(feed => feed.url), ['webcal://schoology.example/feed', '']);
 });

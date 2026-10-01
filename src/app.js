@@ -203,8 +203,12 @@ function calendarFeeds() {
   });
 }
 
-function saveCalendarFeeds(feeds) {
+function saveCalendarFeeds(feeds, { removedFeedId = null } = {}) {
+  const removals = new Set(Array.isArray(state.profile.calendarFeedRemovals) ? state.profile.calendarFeedRemovals : []);
+  for (const feed of feeds) if (feed.url) removals.delete(feed.id);
+  if (removedFeedId) removals.add(removedFeedId);
   state.profile.calendarFeeds = feeds.map(feed => ({ id: feed.id, url: feed.url || '', className: feed.className || '', lastSyncedAt: feed.lastSyncedAt || null }));
+  state.profile.calendarFeedRemovals = [...removals];
 }
 
 function calendarFeed(feedId) { return calendarFeeds().find(feed => feed.id === feedId) || calendarFeeds()[0]; }
@@ -2722,7 +2726,7 @@ function handleAction(action, id) {
   if (action === 'remove-calendar-feed') {
     const previousState = stateSnapshot();
     const feeds = calendarFeeds().map(feed => feed.id === id ? { ...feed, url: '', lastSyncedAt: null } : feed);
-    saveCalendarFeeds(feeds);
+    saveCalendarFeeds(feeds, { removedFeedId: id });
     saveState();
     persistProfile();
     render();
