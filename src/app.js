@@ -2444,9 +2444,15 @@ function persistTaskMutations(tasks = []) {
   const uniqueTasks = [...new Map(tasks.filter(task => task?.id).map(task => [task.id, task])).values()];
   const mutationVersion = markLocalScheduleMutation(uniqueTasks);
   if (!repository) return Promise.resolve([]);
-  const updates = uniqueTasks.filter(task => isRemoteTaskId(task.id)).map(task => repository.update(task)
+  const updates = uniqueTasks.map(task => {
+    const write = isRemoteTaskId(task.id)
+      ? repository.update(task)
+      : taskPersistence.hasPending(task.id)
+        ? taskPersistence.persist(task)
+        : repository.recover?.(task) || taskPersistence.persist(task);
+    return write
     .then(saved => {
-      if (saved && saved.id === task.id) Object.assign(task, saved);
+      if (saved && saved.id) Object.assign(task, saved);
       delete task.syncRetryAfter;
       return task;
     })
@@ -2454,8 +2460,8 @@ function persistTaskMutations(tasks = []) {
       markTaskSyncRetry(task);
       throw error;
     })
-    .finally(() => settleLocalScheduleMutation(task.id, mutationVersion)));
-  uniqueTasks.filter(task => !isRemoteTaskId(task.id)).forEach(task => settleLocalScheduleMutation(task.id, mutationVersion));
+    .finally(() => settleLocalScheduleMutation(task.id, mutationVersion));
+  });
   return Promise.all(updates);
 }
 
@@ -4598,7 +4604,7 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
       localRecoveryAttempts.add(localTask.id);
       const payload = { ...localTask, relatedAssessmentId: recoveredTaskIds.get(localTask.relatedAssessmentId) || localTask.relatedAssessmentId };
       try {
-        const recovered = await persistCreatedTask(payload);
+        const recovered = await (repository.recover ? repository.recover(payload) : persistCreatedTask(payload));
         delete localTask.syncRetryAfter;
         recoveredTaskIds.set(localTask.id, recovered.id);
         recoveredTasks.push(recovered);

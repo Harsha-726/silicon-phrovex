@@ -51,3 +51,47 @@ test('ambiguous task POSTs reconcile with the server by identity', async () => {
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
   }
 });
+
+test('local imported recovery patches the canonical remote row instead of returning the stale idempotent row', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+  const remote = {
+    id: '22222222-2222-4222-8222-222222222222',
+    title: 'Original event',
+    status: 'open',
+    priority: 1,
+    idempotency_key: 'ical:schoology:provider-event-1',
+    due_date: '2026-10-02',
+    task_type: 'fixed_event',
+    source: 'calendar',
+    class_name: 'AP US History'
+  };
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    if (requests.length === 1) return new Response(JSON.stringify({ tasks: [remote] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const body = JSON.parse(options.body);
+    return new Response(JSON.stringify({ task: { ...remote, ...body.task, updated_at: '2026-10-01T20:00:00.000Z' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const saved = await createTaskRepository().recover({
+      id: 'task_local_import',
+      title: 'Edited event',
+      source: 'calendar',
+      type: 'fixed_event',
+      assignmentType: 'event',
+      className: 'Physics I AP',
+      calendarClassManuallySet: true,
+      idempotencyKey: 'ical:provider-event-1'
+    });
+    assert.equal(saved.id, remote.id);
+    assert.equal(saved.className, 'Physics I AP');
+    assert.match(requests[0].url, /idempotency_key=ical%3Aprovider-event-1/);
+    assert.match(requests[1].url, new RegExp(`/api/tasks\\?id=${remote.id}`));
+    assert.equal(JSON.parse(requests[1].options.body).task.class_name, 'Physics I AP');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
+  }
+});

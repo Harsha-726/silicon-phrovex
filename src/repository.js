@@ -137,6 +137,26 @@ async function request(url, options = {}) {
 
 function isRemoteId(id) { return typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id); }
 
+function identityCandidates(task) {
+  const candidates = [];
+  for (const value of [task?.idempotencyKey, task?.schedulingIdentity]) {
+    if (!value || candidates.includes(value)) continue;
+    candidates.push(value);
+    // Calendar imports made before feed-scoped keys were introduced used
+    // ical:<uid>. Schoology now uses ical:schoology:<uid>; resolve both forms
+    // during local-row recovery so an edited legacy row is PATCHed onto the
+    // existing database row instead of being treated as a new task.
+    const raw = String(value);
+    if (raw.startsWith('ical:')) {
+      const remainder = raw.slice('ical:'.length);
+      const separator = remainder.indexOf(':');
+      if (separator < 0) candidates.push(`ical:schoology:${remainder}`);
+      else if (remainder.startsWith('schoology:')) candidates.push(`ical:${remainder.slice('schoology:'.length)}`);
+    }
+  }
+  return candidates;
+}
+
 export function createTaskRepository() {
   const taskUpdateQueues = new Map();
   let profileSaveQueue = Promise.resolve();
@@ -166,11 +186,14 @@ export function createTaskRepository() {
     async load() { const payload = await request('/api/tasks'); return (payload.tasks || []).map(fromRow); },
     async findByIdentity(task) {
       for (const field of ['idempotency_key', 'scheduling_identity']) {
-        const value = task?.[field === 'idempotency_key' ? 'idempotencyKey' : 'schedulingIdentity'];
-        if (!value) continue;
-        const payload = await request(`/api/tasks?${field}=${encodeURIComponent(value)}`);
-        const row = payload?.tasks?.[0];
-        if (row) return fromRow(row);
+        const values = field === 'idempotency_key'
+          ? identityCandidates(task).filter(value => value === task?.idempotencyKey || String(value).startsWith('ical:'))
+          : [task?.schedulingIdentity].filter(Boolean);
+        for (const value of values) {
+          const payload = await request(`/api/tasks?${field}=${encodeURIComponent(value)}`);
+          const row = payload?.tasks?.[0];
+          if (row) return fromRow(row);
+        }
       }
       return null;
     },
@@ -232,6 +255,17 @@ export function createTaskRepository() {
       }
     },
     async update(task) { if (!isRemoteId(task.id)) return task; return updateTaskInOrder(task); },
+    async recover(task) {
+      if (isRemoteId(task?.id)) return updateTaskInOrder(task);
+      const existing = await this.findByIdentity(task);
+      if (existing?.id && isRemoteId(existing.id)) {
+        // The local copy is the user's latest edit. Apply it to the canonical
+        // remote row instead of returning the older row from an idempotent
+        // POST, which used to discard imported class/title/time edits.
+        return updateTaskInOrder({ ...task, id: existing.id });
+      }
+      return this.create(task);
+    },
     async remove(taskId) { if (!isRemoteId(taskId)) return; await request(`/api/tasks?id=${encodeURIComponent(taskId)}`, { method: 'DELETE' }); },
     async removeAll(before = null) { return request(`/api/tasks?all=true${before ? `&before=${encodeURIComponent(before)}` : ''}`, { method: 'DELETE' }); },
     async setOccurrence(taskId, occurrenceDate, completed) { await request('/api/occurrences', { method: completed ? 'POST' : 'DELETE', body: JSON.stringify({ task_id: taskId, occurrence_date: occurrenceDate, completed }) }); }
