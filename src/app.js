@@ -15,6 +15,11 @@ const teamsEnabled = true;
 let currentUser = null;
 let state = seedState();
 let repository = null;
+// A cached workspace is useful for fast navigation, but it is not authoritative
+// for account-level state. Do not render first-run UI or write profile data until
+// the signed-in account has been hydrated from the server.
+let remoteProfileHydrated = false;
+let streakCelebrationPending = null;
 const taskPersistence = createTaskPersistenceCoordinator(task => repository?.create(task) || Promise.resolve(task));
 const views = new Set(['today', 'upcoming', 'calendar', 'inbox', 'brain-dump', 'study', 'completed', 'classes', 'projects', 'teams', 'settings', 'feedback-admin']);
 let view = views.has(location.hash.slice(1)) ? location.hash.slice(1) : 'today';
@@ -1032,7 +1037,8 @@ function renderBackgroundState() {
     return;
   }
   backgroundRenderPending = false;
-  if (authenticatedUser(currentUser) && state.profile.onboardingComplete === false) renderOnboarding();
+  if (authenticatedUser(currentUser) && repository && !remoteProfileHydrated) renderLoadingShell();
+  else if (authenticatedUser(currentUser) && state.profile.onboardingComplete === false) renderOnboarding();
   else if (authenticatedUser(currentUser)) render();
   else renderUnauthenticatedRoute();
 }
@@ -1045,6 +1051,10 @@ function render() {
   if (!authenticatedUser(currentUser)) {
     authRenderMode = null;
     renderUnauthenticatedRoute();
+    return;
+  }
+  if (repository && !remoteProfileHydrated) {
+    renderLoadingShell();
     return;
   }
   repairEventReminderSchedules({ persist: true });
@@ -1239,24 +1249,43 @@ function isStudyTask(task) { return task?.assignmentType === 'study'; }
 function displayTagLabel(label) { return titleCaseTaskTitle(label); }
 function registerDailyVisit() {
   const gamification = state.profile.gamification || {};
+  const todayKey = today();
+  const hadToday = Array.isArray(gamification.completedDays) && gamification.completedDays.includes(todayKey);
+  const previousStreak = Math.max(0, Number(gamification.currentStreak) || 0);
   const before = JSON.stringify(gamification);
-  state.profile.gamification = updateStreak(gamification, new Date());
-  return JSON.stringify(state.profile.gamification) !== before;
+  const next = updateStreak(gamification, new Date());
+  state.profile.gamification = next;
+  if (!hadToday) {
+    const currentStreak = Math.max(0, Number(next.currentStreak) || 0);
+    const previousMilestone = Math.floor(previousStreak / 7);
+    const currentMilestone = Math.floor(currentStreak / 7);
+    streakCelebrationPending = {
+      currentStreak,
+      addedDays: Math.max(1, currentStreak - previousStreak),
+      milestone: currentMilestone > previousMilestone ? currentMilestone * 7 : 0
+    };
+  }
+  return JSON.stringify(next) !== before;
 }
 function mergeGamification(remote = {}, local = {}) {
   const completedDays = [...new Set([
     ...(Array.isArray(remote.completedDays) ? remote.completedDays : []),
     ...(Array.isArray(local.completedDays) ? local.completedDays : [])
   ])].sort();
-  return {
+  const mergeFlags = (first = {}, second = {}) => Object.fromEntries([...new Set([...Object.keys(first || {}), ...Object.keys(second || {})])].filter(key => Boolean(first?.[key]) || Boolean(second?.[key])).map(key => [key, true]));
+  const merged = {
     ...remote,
     ...local,
     xp: Math.max(Number(remote.xp) || 0, Number(local.xp) || 0),
     completedDays,
-    awardedTaskIds: { ...(remote.awardedTaskIds || {}), ...(local.awardedTaskIds || {}) },
-    streakMilestonesAwarded: { ...(remote.streakMilestonesAwarded || {}), ...(local.streakMilestonesAwarded || {}) },
+    awardedTaskIds: mergeFlags(remote.awardedTaskIds, local.awardedTaskIds),
+    streakMilestonesAwarded: mergeFlags(remote.streakMilestonesAwarded, local.streakMilestonesAwarded),
     longestStreak: Math.max(Number(remote.longestStreak) || 0, Number(local.longestStreak) || 0)
   };
+  const dates = [remote.lastCompletionDate, local.lastCompletionDate].filter(value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)).sort();
+  if (dates.length) merged.lastCompletionDate = dates.at(-1);
+  merged.level = gamificationLevel(merged.xp);
+  return merged;
 }
 function ensureClassColors() {
   const taskClasses = state.tasks.map(task => task.className).filter(Boolean);
@@ -1641,7 +1670,8 @@ function routePublicNavigation() {
   if (['about', 'privacy', 'it-admin', 'setup'].includes(page)) renderPublicInfoPage(page);
   else if (authenticatedUser(currentUser)) {
     authRenderMode = null;
-    if (state.profile.onboardingComplete === false) renderOnboarding();
+    if (repository && !remoteProfileHydrated) renderLoadingShell();
+    else if (state.profile.onboardingComplete === false) renderOnboarding();
     else render();
   } else renderUnauthenticatedRoute();
 }
@@ -4305,27 +4335,14 @@ function showConfirm(message, onConfirm) {
   document.body.appendChild(card);
   card.querySelector('.secondary-button').focus();
 }
-function streakCelebrationStorageKey() { return currentUser?.id ? `${STORAGE_KEY}.streak-seen.${currentUser.id}` : null; }
 function maybeCelebrateStreak() {
-  const storageKey = streakCelebrationStorageKey();
-  if (!storageKey) return;
-  const currentStreak = Math.max(0, Number(state.profile.gamification?.currentStreak) || 0);
-  const todayKey = today();
-  let seen = null;
-  try { seen = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch { seen = null; }
-  if (!seen) {
-    localStorage.setItem(storageKey, JSON.stringify({ date: todayKey, streak: currentStreak }));
-    showStreakCelebration(currentStreak, 1, currentStreak > 0 && currentStreak % 7 === 0 ? currentStreak : 0);
-    return;
-  }
-  if (seen.date === todayKey) return;
-  const previousStreak = Math.max(0, Number(seen.streak) || 0);
-  localStorage.setItem(storageKey, JSON.stringify({ date: todayKey, streak: currentStreak }));
-  const addedDays = Math.max(1, currentStreak - previousStreak);
-  const previousMilestone = Math.floor(previousStreak / 7);
-  const currentMilestone = Math.floor(currentStreak / 7);
-  const milestone = currentMilestone > previousMilestone ? currentMilestone * 7 : 0;
-  showStreakCelebration(currentStreak, addedDays, milestone);
+  // This is deliberately session-scoped. The streak itself is account data;
+  // a per-device localStorage flag made every new device look like a new
+  // account and replayed the celebration after every login.
+  const pending = streakCelebrationPending;
+  streakCelebrationPending = null;
+  if (!pending) return;
+  showStreakCelebration(pending.currentStreak, pending.addedDays, pending.milestone);
 }
 function showStreakCelebration(streak, addedDays, milestone = 0) {
   document.querySelector('.streak-celebration')?.remove();
@@ -4461,6 +4478,10 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
   ]);
   try {
     const [remoteTasks, remoteProfile, exportStatus] = await Promise.all([repository.load(), repository.loadProfile(), includeCalendar ? repository.calendarExportStatus().catch(() => null) : Promise.resolve(null)]);
+    // This is the first safe point at which account-owned profile state may be
+    // used. Before this, a new device only has seedState() and must never be
+    // allowed to show onboarding or persist that empty profile upstream.
+    remoteProfileHydrated = Boolean(remoteProfile?.profile);
     const remoteSettings = remoteProfile?.profile?.settings;
     const remoteClearedAt = remoteSettings?.tasksClearedAt || remoteSettings?.tasks_cleared_at;
     const localClearedAt = state.profile.tasksClearedAt;
@@ -4558,7 +4579,7 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
     if (remoteSettings && typeof remoteSettings === 'object' && profileVersionAtStart === profileMutationVersion) {
       const { classes: remoteClasses, projects: remoteProjects, ...profileSettings } = remoteSettings;
       const localGamification = state.profile.gamification || {};
-      state.profile = { ...state.profile, ...profileSettings, displayName: typeof remoteProfile.profile?.display_name === 'string' ? remoteProfile.profile.display_name : state.profile.displayName, onboardingComplete: Boolean(remoteProfile.profile?.onboarding_complete), classPreferences: { ...state.profile.classPreferences, ...(profileSettings.classPreferences || {}) } };
+      state.profile = { ...state.profile, ...profileSettings, displayName: typeof remoteProfile.profile?.display_name === 'string' ? remoteProfile.profile.display_name : state.profile.displayName, onboardingComplete: state.profile.onboardingComplete === true || Boolean(remoteProfile.profile?.onboarding_complete), classPreferences: { ...state.profile.classPreferences, ...(profileSettings.classPreferences || {}) } };
       state.profile.gamification = mergeGamification(profileSettings.gamification || {}, localGamification);
       if (Array.isArray(remoteClasses)) state.classes = remoteClasses.filter(name => typeof name === 'string' && name.trim()).map(normalizeClassName);
       if (Array.isArray(remoteProjects)) state.projects = remoteProjects.filter(name => typeof name === 'string' && name.trim()).map(normalizeClassName);
@@ -4609,6 +4630,9 @@ async function bootstrap() {
       billingBusy = false;
       studyError = '';
       repository = currentUser ? createTaskRepository() : null;
+      remoteProfileHydrated = false;
+      streakCelebrationPending = null;
+      profileMutationVersion = 0;
     if (!currentUser) { selectedTaskId = null; selectedCollection = null; teamProjects = []; teamTaskFeed = []; teamTaskClearTimestamps = {}; activeTeamProjectId = null; activeTeamDetail = null; activeTeamFiles = []; renderUnauthenticatedRoute(); return; }
       authRenderMode = null;
       state = loadState();
@@ -4620,8 +4644,8 @@ async function bootstrap() {
       activeTeamProjectId = null;
       activeTeamDetail = null;
       normalizeState();
+      remoteProfileHydrated = state.profile.onboardingComplete === true;
       void registerNotificationWorker();
-      if (registerDailyVisit()) persistProfile();
       saveState();
       render();
       void syncRemoteState();
@@ -4630,16 +4654,18 @@ async function bootstrap() {
   }
   if (!currentUser) { authRenderMode = null; renderUnauthenticatedRoute(); return; }
   repository = createTaskRepository();
+  remoteProfileHydrated = false;
+  streakCelebrationPending = null;
+  profileMutationVersion = 0;
   state = loadState();
   loadCalendarExportState();
   loadTeamInviteCodes();
   loadTeamTaskClearTimestamps();
   normalizeState();
+  remoteProfileHydrated = state.profile.onboardingComplete === true;
   void registerNotificationWorker();
-  if (registerDailyVisit()) persistProfile();
   saveState();
-  if (currentUser && state.profile.onboardingComplete === false) renderOnboarding();
-  else render();
+  render();
   void syncRemoteState();
 }
 
