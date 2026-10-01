@@ -13,11 +13,12 @@ export function taskNotificationTiming(task, now = new Date(), leadMinutes = TAS
   const roundedMinutes = Math.round(minutesUntil);
   const today = toDateKey(now);
   if (minutesUntil >= 0 && minutesUntil <= leadMinutes) {
-    return { kind: 'task-due-soon', date, time: time.slice(0, 5), dueAt, minutesUntil: roundedMinutes };
+    // Keep the due-now alert distinct from the five-minute alert so the
+    // browser can deliver both instead of deduplicating them under one tag.
+    return { kind: minutesUntil <= 0.5 ? 'task-due-now' : 'task-due-soon', date, time: time.slice(0, 5), dueAt, minutesUntil: roundedMinutes };
   }
   if (date === today && minutesUntil < 0 && minutesUntil >= -leadMinutes) {
     return { kind: 'task-overdue', date, time: time.slice(0, 5), dueAt, minutesUntil: roundedMinutes };
   }
   return null;
 }
-

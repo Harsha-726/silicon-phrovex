@@ -16,6 +16,13 @@ test('tasks outside the reminder window do not notify early', () => {
   assert.equal(taskNotificationTiming(task, now), null);
 });
 
+test('due-now alerts use a separate notification phase from five-minute alerts', () => {
+  const task = { id: 'task-now', title: 'History', status: 'open', dueDate: '2026-09-30', dueTime: '12:00' };
+  const timing = taskNotificationTiming(task, now);
+  assert.equal(timing.kind, 'task-due-now');
+  assert.equal(timing.minutesUntil, 0);
+});
+
 test('completed tasks never create due notifications', () => {
   const task = { id: 'task-3', title: 'Finished', status: 'completed', dueDate: '2026-09-30', dueTime: '12:03' };
   assert.equal(taskNotificationTiming(task, now), null);
@@ -27,4 +34,3 @@ test('planned execution time is used when it differs from the deadline', () => {
   assert.equal(timing.kind, 'task-due-soon');
   assert.equal(timing.date, '2026-09-30');
 });
-

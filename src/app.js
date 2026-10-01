@@ -327,6 +327,15 @@ function registerNotificationWorker() {
 async function showBrowserNotification(title, body, { id = '', taskId = null } = {}) {
   if (browserNotificationPermission() !== 'granted') return false;
   const options = { body, icon: '/favicon.svg', badge: '/favicon.svg', tag: id || undefined, renotify: false, data: { taskId } };
+  if (typeof document !== 'undefined' && document.hidden) {
+    try {
+      const registration = await registerNotificationWorker();
+      if (registration?.showNotification) {
+        await registration.showNotification(title, options);
+        return true;
+      }
+    } catch { /* fall through to the page notification path */ }
+  }
   try {
     // The page is the reliable foreground delivery path. A service-worker
     // notification can be suppressed while its worker is still activating;
@@ -361,7 +370,7 @@ async function deliverBrowserNotification(item) {
 async function deliverPendingBrowserNotifications() {
   if (browserNotificationPermission() !== 'granted') return;
   const cutoff = Date.now() - 10 * 60 * 1000;
-  const pending = (state.profile.notifications || []).filter(item => ['task-due-soon', 'task-overdue'].includes(item.type) && !item.browserDeliveredAt && Date.parse(item.createdAt || '') >= cutoff);
+  const pending = (state.profile.notifications || []).filter(item => ['task-due-soon', 'task-due-now', 'task-overdue'].includes(item.type) && !item.browserDeliveredAt && Date.parse(item.createdAt || '') >= cutoff);
   await Promise.all(pending.map(item => deliverBrowserNotification(item)));
 }
 
@@ -406,13 +415,13 @@ function checkDueNotifications(now = new Date()) {
     const timing = taskNotificationTiming(task, now);
     if (!timing) return;
     const { date, time, minutesUntil } = timing;
-    if (timing.kind === 'task-due-soon') {
+    if (timing.kind === 'task-due-soon' || timing.kind === 'task-due-now') {
       addAppNotification({
-        type: 'task-due-soon',
+        type: timing.kind,
         task,
-        id: notificationStorageId('task-due-soon', task, `${date}T${time}`),
-        title: `${task.title} is due soon`,
-        body: minutesUntil === 0 ? 'Due now.' : `Due in ${minutesUntil} minute${minutesUntil === 1 ? '' : 's'}.`
+        id: notificationStorageId(timing.kind, task, `${date}T${time}`),
+        title: timing.kind === 'task-due-now' ? `${task.title} is due now` : `${task.title} is due soon`,
+        body: timing.kind === 'task-due-now' ? 'Due now.' : `Due in ${minutesUntil} minute${minutesUntil === 1 ? '' : 's'}.`
       });
     }
     if (timing.kind === 'task-overdue') {
