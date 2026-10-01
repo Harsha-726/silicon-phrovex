@@ -4594,19 +4594,26 @@ async function runRemoteSync({ includeCalendar = true } = {}) {
       try { await repository.update(task); delete task.syncRetryAfter; } catch { markTaskSyncRetry(task); }
     }));
     let gamificationChanged = false;
+    let profileRepairNeeded = false;
     if (remoteSettings && typeof remoteSettings === 'object' && profileVersionAtStart === profileMutationVersion) {
       const { classes: remoteClasses, projects: remoteProjects, ...profileSettings } = remoteSettings;
       const localGamification = state.profile.gamification || {};
+      const localCalendarFeeds = calendarFeeds();
       state.profile = { ...state.profile, ...profileSettings, displayName: typeof remoteProfile.profile?.display_name === 'string' ? remoteProfile.profile.display_name : state.profile.displayName, onboardingComplete: state.profile.onboardingComplete === true || Boolean(remoteProfile.profile?.onboarding_complete), classPreferences: { ...state.profile.classPreferences, ...(profileSettings.classPreferences || {}) } };
       state.profile.gamification = mergeGamification(profileSettings.gamification || {}, localGamification);
       if (Array.isArray(remoteClasses)) state.classes = uniqueLabels([...state.classes, ...remoteClasses, ...state.tasks.map(task => task.className).filter(Boolean)]);
       if (Array.isArray(remoteProjects)) state.projects = remoteProjects.filter(name => typeof name === 'string' && name.trim()).map(normalizeClassName);
       normalizeClassPreferences(state.classes);
-      state.profile.calendarFeeds = calendarFeeds().map(feed => ({ id: feed.id, url: feed.url, className: feed.className, lastSyncedAt: feed.lastSyncedAt }));
+      state.profile.calendarFeeds = calendarFeeds().map(feed => {
+        const local = localCalendarFeeds.find(item => item.id === feed.id);
+        const merged = { id: feed.id, url: feed.url || local?.url || '', className: feed.className || local?.className || '', lastSyncedAt: feed.lastSyncedAt || local?.lastSyncedAt || null };
+        if (merged.url !== feed.url || merged.className !== feed.className || merged.lastSyncedAt !== feed.lastSyncedAt) profileRepairNeeded = true;
+        return merged;
+      });
       ensureClassColors();
     }
     gamificationChanged = registerDailyVisit();
-    if (gamificationChanged) persistProfile();
+    if (gamificationChanged || profileRepairNeeded) persistProfile();
     saveState();
     // Make task/profile changes visible as soon as the fast remote merge is
     // complete. Calendar feeds are external and can be considerably slower.
