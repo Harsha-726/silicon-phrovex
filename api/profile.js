@@ -31,6 +31,26 @@ function normalizeFeedRecord(id, value) {
     lastSyncedAt: firstString(source, ['lastSyncedAt', 'last_synced_at']) || null
   };
 }
+function findNestedFeed(value, id, depth = 0) {
+  if (depth > 4 || value === null || value === undefined) return null;
+  if (typeof value === 'string') return /^(?:webcal|https?):\/\//i.test(value.trim()) ? normalizeFeedRecord(id, value) : null;
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = Object.entries(value);
+  for (const [key, child] of entries) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey.includes(id) || /calendar|ical|feed/.test(lowerKey)) {
+      const direct = normalizeFeedRecord(id, child);
+      if (direct.url) return direct;
+      const nested = findNestedFeed(child, id, depth + 1);
+      if (nested?.url) return nested;
+    }
+  }
+  for (const child of entries.map(([, value]) => value)) {
+    const nested = findNestedFeed(child, id, depth + 1);
+    if (nested?.url) return nested;
+  }
+  return null;
+}
 function legacyFeedRecord(settings, integrations, id) {
   const direct = normalizeFeedRecord(id, objectValue(settings.calendarFeeds)[id] || objectValue(integrations)[id]);
   if (direct.url) return direct;
@@ -47,6 +67,10 @@ function legacyFeedRecord(settings, integrations, id) {
     const result = normalizeFeedRecord(id, candidate);
     if (result.url) return result;
   }
+  const nested = findNestedFeed(integrations, id);
+  if (nested?.url) return nested;
+  const topLevel = findNestedFeed(settings, id);
+  if (topLevel?.url) return topLevel;
   return { id, url: '', className: '', lastSyncedAt: null };
 }
 function normalizeClassPreference(value) {

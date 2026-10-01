@@ -57,3 +57,11 @@ test('profile settings normalize legacy feeds and class allocations into the cur
   assert.deepEqual(settings.classPreferences.Chemistry, { sessions_per_week: 4, session_length_minutes: 60, sessionsPerWeek: 4, sessionLength: 60 });
   assert.equal('integrations' in settings, false);
 });
+
+test('profile settings recover feeds nested under historical calendar containers', () => {
+  const settings = normalizeProfileSettingsForClient({
+    integrations: { calendar: { sources: { schoologyUrl: 'webcal://schoology.example/legacy', todoist: { feedUrl: 'https://todoist.example/legacy' } } } }
+  });
+  assert.equal(settings.calendarFeeds.find(feed => feed.id === 'schoology').url, 'webcal://schoology.example/legacy');
+  assert.equal(settings.calendarFeeds.find(feed => feed.id === 'todoist').url, 'https://todoist.example/legacy');
+});
