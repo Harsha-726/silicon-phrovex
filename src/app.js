@@ -3426,7 +3426,11 @@ function saveDrawerTask(id) {
   // Native time inputs may return HH:MM while remote rows can contain
   // HH:MM:SS. Compare the canonical minute value so a duration-only edit
   // does not accidentally pin a flexible task and freeze the chain.
-  const hasStoredExecution = Boolean(task.scheduledDate || task.scheduledTime || task.schedule?.execution?.date || task.schedule?.execution?.time);
+  // Imported/fixed events use their provider date/time as their execution
+  // fallback even when the legacy scheduled_* columns are empty (especially
+  // all-day events). Editing a class/title must not reinterpret that deadline
+  // fallback as a newly user-pinned planned slot.
+  const hasStoredExecution = Boolean(task.scheduledDate || task.scheduledTime || task.schedule?.execution?.date || task.schedule?.execution?.time || task.source === 'calendar' || task.type === 'fixed_event');
   // A legacy/due-only task can show a time in this drawer without having an
   // execution timestamp of its own. Saving that visible time must promote it
   // to a real fixed execution; comparing only against the displayed fallback
