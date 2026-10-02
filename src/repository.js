@@ -7,7 +7,9 @@ const explicitExecutionMarker = 'silico:explicit-execution';
 const manualCalendarClassMarker = 'silico:calendar-class-manual';
 function schedulingReasonWithAssignment(task) {
   const marker = `silico:assignment:${task.assignmentType || 'homework'}`;
-  const parts = String(task.schedulingReason || '').split('|').filter(part => part && !part.startsWith('silico:assignment:') && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker && part !== manualCalendarClassMarker);
+  const priority = Number(task.priority);
+  const priorityMarker = [1, 2, 3, 4].includes(priority) ? `silico:priority:${priority}` : null;
+  const parts = String(task.schedulingReason || '').split('|').filter(part => part && !part.startsWith('silico:assignment:') && !/^silico:priority:[1-4]$/.test(part) && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker && part !== manualCalendarClassMarker);
   if (task.autoScheduled === true) parts.push(autoScheduledMarker);
   if (task.studyDateLocked === true) parts.push(studyDateLockedMarker);
   if (task.explicitExecution === true) parts.push(explicitExecutionMarker);
@@ -15,7 +17,7 @@ function schedulingReasonWithAssignment(task) {
   // metadata too. This survives legacy update fallbacks that do not have the
   // newer calendar_class_manually_set column yet.
   if (task.calendarClassManuallySet === true) parts.push(manualCalendarClassMarker);
-  return [...parts, marker].join('|');
+  return [...(priorityMarker ? [priorityMarker] : []), ...parts, marker].join('|');
 }
 
 export function toRow(task, includeNulls = true) {
@@ -67,8 +69,8 @@ export function fromRow(row) {
   const studyDateLocked = rawSchedulingReason.split('|').includes(studyDateLockedMarker);
   const explicitExecution = rawSchedulingReason.split('|').includes(explicitExecutionMarker);
   const manualCalendarClass = rawSchedulingReason.split('|').includes(manualCalendarClassMarker);
-  const priorityMarker = rawSchedulingReason.match(/^silico:priority:([1-4])(?:\|silico:assignment:[a-z_]+)?$/)?.[1] || null;
-  const schedulingReason = rawSchedulingReason.split('|').filter(part => !part.startsWith('silico:assignment:') && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker && part !== manualCalendarClassMarker).join('|') || null;
+  const priorityMarker = rawSchedulingReason.split('|').find(part => /^silico:priority:[1-4]$/.test(part))?.slice('silico:priority:'.length) || null;
+  const schedulingReason = rawSchedulingReason.split('|').filter(part => !part.startsWith('silico:assignment:') && !/^silico:priority:[1-4]$/.test(part) && part !== autoScheduledMarker && part !== studyDateLockedMarker && part !== explicitExecutionMarker && part !== manualCalendarClassMarker).join('|') || null;
   const priority = priorityMarker ? Number(priorityMarker) : typeof row.priority === 'number' ? row.priority : ({ low: 1, medium: 1, high: 2, urgent: 3, critical: 4 })[String(row.priority).toLowerCase()] || Number(row.priority) || 1;
   const status = row.status === 'completed' ? 'completed' : 'open';
   const dueDate = typeof row.due_date === 'string' ? row.due_date.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || row.due_date : row.due_date;

@@ -21,6 +21,27 @@ test('manual imported class assignments survive legacy task payloads', () => {
   assert.equal(restored.schedulingReason, null);
 });
 
+test('numeric priority is carried in a canonical marker for legacy imported rows', () => {
+  const row = toRow({
+    title: 'Imported event',
+    priority: 4,
+    source: 'calendar',
+    type: 'fixed_event',
+    assignmentType: 'event',
+    schedulingReason: 'Calendar event',
+    calendarClassManuallySet: true
+  }, false);
+
+  assert.match(row.scheduling_reason, /^silico:priority:4\|/);
+  const restored = fromRow({
+    ...row,
+    priority: 'medium',
+    scheduling_reason: 'Calendar event|silico:calendar-class-manual|silico:assignment:event|silico:priority:4'
+  });
+  assert.equal(restored.priority, 4);
+  assert.equal(restored.schedulingReason, 'Calendar event');
+});
+
 test('ambiguous task POSTs reconcile with the server by identity', async () => {
   const previousFetch = globalThis.fetch;
   const previousWindow = globalThis.window;
