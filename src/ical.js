@@ -192,6 +192,18 @@ export function preserveImportedCalendarTask(existing, incoming) {
   return { task: changed ? { ...existing, idempotencyKey: incoming.idempotencyKey } : existing, changed };
 }
 
+// A POST made during a feed refresh can be answered with the canonical UUID
+// for an older row when the browser's legacy provider key did not match the
+// current feed-scoped key. The edited local row is authoritative in that
+// situation: retain every local field and only repair the provider identity.
+export function reconcilePersistedImportedCalendarTask(existing, imported, persisted) {
+  if (!existing || !persisted?.id || existing.id !== persisted.id) {
+    return { task: { ...imported, ...persisted }, duplicate: false };
+  }
+  const task = preserveImportedCalendarTask(existing, { ...imported, id: existing.id }).task;
+  return { task, duplicate: true };
+}
+
 // Provider UIDs are stable, but early imports stored them as ical:<uid>
 // while newer imports scope them to the feed as ical:<feed>:<uid>. Treat the
 // legacy key as the same event during reconciliation; otherwise a refresh

@@ -1,6 +1,6 @@
 import { ASSIGNMENT_TYPES, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, addDays, assignUniqueClassHues, assignmentTypeLabel, assessmentTitle, buildPlanningState, cleanTaskTitle, clearTaskExecution, dateAt, deadlineRisk, expandRecurringTask, extractSubject, formatDate, formatLongDate, formatTime, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isDateKey, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, normalizeClassColorKey, normalizeRecurrence, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankNextUpSameDay, rankRecommendations, recommendNextAction, replanAssessmentSessions, recordCompletion, recurrenceFromText, removeClassFromTitle, resolvePriority, scheduleOriginOf, seedState, setTaskExecution, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, uid, updateStreak, INTENTS } from './core.js';
 import { parseCaptureCommands } from './capture.js';
-import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEvent, isPastImportedOneTimeTask, matchesImportedCalendarTask, parseICal, preserveImportedCalendarTask, repairImportedCalendarClass } from './ical.js';
+import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEvent, isPastImportedOneTimeTask, matchesImportedCalendarTask, parseICal, preserveImportedCalendarTask, reconcilePersistedImportedCalendarTask, repairImportedCalendarClass } from './ical.js';
 import { clerk, clerkLoadOptions, platformStatus } from './platform.js';
 import { createTaskRepository } from './repository.js';
 import { createTaskPersistenceCoordinator } from './task-persistence.js';
@@ -4322,7 +4322,31 @@ async function handleCalendarImport(event) {
     if (repository) {
       const results = await Promise.all(imported.map(task => persistCreatedTask(task).catch(error => { markTaskSyncRetry(task); return null; })));
       const failed = results.filter(result => !result).length;
-      results.forEach((result, index) => { if (result) Object.assign(imported[index], result); });
+      const duplicateImportedRows = new Set();
+      const localRowsToReconcile = [];
+      results.forEach((result, index) => {
+        if (!result) return;
+        const importedTask = imported[index];
+        // An idempotent POST can return an older canonical row when this
+        // browser's legacy provider key did not match the local copy. Do not
+        // copy that stale row over the edited local object. Reuse the local
+        // row, repair its provider key, and PATCH its full edited snapshot to
+        // the UUID returned by the server.
+        const existing = state.tasks.find(candidate => candidate !== importedTask && candidate.id === result.id && candidate.source === 'calendar');
+        if (existing) {
+          const preserved = reconcilePersistedImportedCalendarTask(existing, importedTask, result).task;
+          const existingIndex = state.tasks.indexOf(existing);
+          if (existingIndex >= 0) state.tasks[existingIndex] = preserved;
+          duplicateImportedRows.add(importedTask);
+          localRowsToReconcile.push(preserved);
+          return;
+        }
+        Object.assign(importedTask, reconcilePersistedImportedCalendarTask(null, importedTask, result).task);
+      });
+      if (duplicateImportedRows.size) state.tasks = state.tasks.filter(task => !duplicateImportedRows.has(task));
+      if (localRowsToReconcile.length) {
+        await Promise.all(localRowsToReconcile.map(task => repository.update(task).catch(() => { markTaskSyncRetry(task); return null; })));
+      }
       saveState();
       await persistProfile();
       renderBackgroundState();

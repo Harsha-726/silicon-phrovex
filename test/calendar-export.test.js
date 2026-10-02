@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activeUserForToken, buildCalendar, escapeIcsText, exportableTask, recurrenceRule } from '../api/calendar-export.js';
-import { filterCalendarEvents, isPastImportedOneTimeTask, matchesImportedCalendarTask, preserveImportedCalendarTask, repairImportedCalendarClass } from '../src/ical.js';
+import { filterCalendarEvents, isPastImportedOneTimeTask, matchesImportedCalendarTask, preserveImportedCalendarTask, reconcilePersistedImportedCalendarTask, repairImportedCalendarClass } from '../src/ical.js';
 import { deduplicateTaskRecords } from '../src/task-merge.js';
 
 const baseTask = (overrides = {}) => ({
@@ -45,6 +45,37 @@ test('completed imported rows beat newer open legacy duplicates', () => {
   const result = deduplicateTaskRecords([completed, duplicate]);
   assert.deepEqual(result.tasks, [completed]);
   assert.deepEqual(result.duplicates, [duplicate]);
+});
+
+test('a stale idempotent import response cannot overwrite a local imported edit', () => {
+  const existing = {
+    id: '11111111-1111-4111-8111-111111111111',
+    title: 'Math Common Assessment',
+    className: 'Mathematics',
+    source: 'calendar',
+    idempotencyKey: 'ical:legacy-event-1',
+    calendarClassManuallySet: true,
+    updatedAt: '2026-09-29T14:00:00.000Z'
+  };
+  const imported = {
+    id: 'task_local_import',
+    title: 'Math Common Assessment',
+    className: null,
+    source: 'calendar',
+    idempotencyKey: 'ical:schoology:legacy-event-1'
+  };
+  const staleResponse = {
+    id: existing.id,
+    title: 'Math Common Assessment',
+    class_name: null,
+    idempotency_key: 'ical:legacy-event-1'
+  };
+  const result = reconcilePersistedImportedCalendarTask(existing, imported, staleResponse);
+  assert.equal(result.duplicate, true);
+  assert.equal(result.task.id, existing.id);
+  assert.equal(result.task.className, 'Mathematics');
+  assert.equal(result.task.calendarClassManuallySet, true);
+  assert.equal(result.task.idempotencyKey, imported.idempotencyKey);
 });
 
 test('ICS text escaping protects commas, semicolons, backslashes, and newlines', () => {
