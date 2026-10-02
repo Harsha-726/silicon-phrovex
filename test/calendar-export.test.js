@@ -99,6 +99,7 @@ test('resync preserves manual edits to imported tasks while repairing only legac
 test('calendar refresh matches legacy and feed-scoped identities before recreating an edited event', () => {
   assert.equal(matchesImportedCalendarTask({ idempotencyKey: 'ical:provider-event-1' }, 'provider-event-1', 'todoist'), true);
   assert.equal(matchesImportedCalendarTask({ idempotencyKey: 'ical:schoology:provider-event-1' }, 'provider-event-1', 'schoology'), true);
+  assert.equal(matchesImportedCalendarTask({ schedulingIdentity: 'ical:schoology:provider-event-1' }, 'provider-event-1', 'schoology'), true);
   assert.equal(matchesImportedCalendarTask({ idempotencyKey: 'ical:other-feed:provider-event-1' }, 'provider-event-1', 'todoist'), false);
 });
 

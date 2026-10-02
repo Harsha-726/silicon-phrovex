@@ -890,6 +890,14 @@ test('Next up uses the longest task when priority and assessment status tie', ()
   assert.equal(rankNextUpSameDay(tasks)[0].id, 'long');
 });
 
+test('Next up prefers explicitly scheduled work before unscheduled work at the same priority', () => {
+  const tasks = [
+    { id: 'unscheduled', priority: 4, duration: 180, dueDate: '2026-08-25' },
+    { id: 'scheduled', priority: 1, duration: 20, dueDate: '2026-08-25', scheduledDate: '2026-08-25', scheduledTime: '17:00' }
+  ];
+  assert.equal(rankNextUpSameDay(tasks)[0].id, 'scheduled');
+});
+
 test('duration is a contiguous-window requirement', () => {
   const state = buildPlanningState({
     currentTime: new Date(2026, 7, 25, 12, 0),

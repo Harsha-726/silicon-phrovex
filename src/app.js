@@ -1197,12 +1197,10 @@ function nextPlanningAction() {
   const todayKey = today();
   const todayTasks = tasksForDate(todayKey).filter(task => task.status !== 'completed');
   const todayTask = rankNextUpSameDay(todayTasks)[0] || null;
-  // A dashboard focus should never pull a distant task forward. Tomorrow is
-  // the only future fallback; anything later belongs in Upcoming.
-  const tomorrowKey = addDays(todayKey, 1);
-  const tomorrowTasks = rangeTasks(tomorrowKey, tomorrowKey).filter(task => task.status !== 'completed');
-  const nextTask = todayTask || rankNextUpSameDay(tomorrowTasks)[0] || null;
-  if (!nextTask) return { task: null, window: null, reason: 'You\'re caught up. Nothing needs to move forward right now.' };
+  // Next up is intentionally day-scoped. A clear current day is a useful
+  // state, not an invitation to pull tomorrow's work into today's focus.
+  const nextTask = todayTask;
+  if (!nextTask) return { task: null, window: null, reason: 'Your day is clear. Nothing is scheduled for today.' };
   const dateKey = taskDisplayDate(nextTask);
   const time = taskDisplayTime(nextTask);
   const duration = Number(nextTask.remainingDuration ?? nextTask.duration) || 30;
@@ -1210,7 +1208,7 @@ function nextPlanningAction() {
   return {
     task: nextTask,
     window: start ? { dateKey, start: start.getHours() * 60 + start.getMinutes(), end: start.getHours() * 60 + start.getMinutes() + duration, duration, scheduled: true } : null,
-    reason: todayTask ? `Your next scheduled item is ${nextTask.title}.` : `You're caught up today. Your next planned work is ${nextTask.title}.`
+    reason: `Your next scheduled item is ${nextTask.title}.`
   };
 }
 function renderPlanningPulse() {

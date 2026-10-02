@@ -198,8 +198,8 @@ export function preserveImportedCalendarTask(existing, incoming) {
 // creates a second provider row and the user's local edits appear to vanish.
 export function matchesImportedCalendarTask(task, uid, feedId = 'file') {
   if (!task || !uid) return false;
-  const currentKey = String(task.idempotencyKey || '');
-  return currentKey === `ical:${feedId}:${uid}` || currentKey === `ical:${uid}`;
+  const keys = [task.idempotencyKey, task.schedulingIdentity].filter(Boolean).map(String);
+  return keys.some(currentKey => currentKey === `ical:${feedId}:${uid}` || currentKey === `ical:${uid}`);
 }
 
 // Class matching is import-owned until the user explicitly changes it in the
