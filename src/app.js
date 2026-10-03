@@ -1,4 +1,4 @@
-import { ASSIGNMENT_TYPES, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, addDays, assignUniqueClassHues, assignmentTypeLabel, assessmentTitle, buildPlanningState, cleanTaskTitle, clearTaskExecution, dateAt, deadlineRisk, expandRecurringTask, extractSubject, formatDate, formatLongDate, formatTime, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isDateKey, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, normalizeClassColorKey, normalizeRecurrence, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankNextUpSameDay, rankRecommendations, recommendNextAction, replanAssessmentSessions, recordCompletion, recurrenceFromText, removeClassFromTitle, resolvePriority, scheduleOriginOf, seedState, setTaskExecution, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, uid, updateStreak, INTENTS } from './core.js';
+import { ASSIGNMENT_TYPES, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, addDays, assignUniqueClassHues, assignmentTypeLabel, assessmentTitle, buildPlanningState, cleanTaskTitle, clearTaskExecution, dateAt, deadlineRisk, expandRecurringTask, extractSubject, formatDate, formatLongDate, formatTime, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isDateKey, isOverdue, isPastSchedule, isPlannerAllocatedExecution, isPlannerDisplayedAsPlanned, isRigidExecution, makeTask, matchExistingClass, normalizeClassColorKey, normalizeRecurrence, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, promotePlannerAllocationToUserFixed, rankNextUpSameDay, rankRecommendations, recommendNextAction, replanAssessmentSessions, recordCompletion, recurrenceFromText, removeClassFromTitle, resolvePriority, scheduleOriginOf, seedState, setTaskExecution, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, uid, updateStreak, INTENTS } from './core.js';
 import { parseCaptureCommands } from './capture.js';
 import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEvent, isPastImportedOneTimeTask, matchesImportedCalendarTask, parseICal, preserveImportedCalendarTask, reconcilePersistedImportedCalendarTask, repairImportedCalendarClass } from './ical.js';
 import { clerk, clerkLoadOptions, platformStatus } from './platform.js';
@@ -1370,7 +1370,7 @@ function renderTaskRow(task) {
   const displayTime = taskDisplayTime(task);
   const execution = taskExecution(task);
   const isNextUp = !isTeamTask && nextUpTaskId === task.id;
-  return `<div class="task-row ${isTeamTask ? 'team-task-feed-row' : ''} ${isNextUp ? 'is-next-up' : ''} ${task.status === 'completed' ? 'is-complete' : ''} ${isOverdue(task) ? 'is-overdue' : ''}" data-task-id="${task.id}" data-drop-date="${displayDate || ''}" ${draggable} title="${isTeamTask ? 'Team task' : 'Drag to reorder or move this task'}"><button class="checkbox priority-${task.priority || 1} ${task.status === 'completed' ? 'checked' : ''}" data-action="${toggleAction}" data-id="${encodedTeamId}" aria-label="${task.status === 'completed' ? 'Restore' : 'Complete'} ${escapeHtml(task.title)}">${task.status === 'completed' ? '✓' : ''}</button><div class="task-main"><button class="task-title" data-action="${titleAction}" data-id="${isTeamTask ? task.teamProjectId : task.id}">${escapeHtml(task.title)}</button><div class="task-meta">${displayTime ? `<span>${formatTime(displayTime)}</span>` : displayDate ? `<span>${formatDate(displayDate)}</span>` : ''}${task.scheduledDate ? '<span class="planned-label">Planned</span>' : ''}${task.duration ? `<span>· ${task.duration} min</span>` : ''}${isNextUp ? '<span class="tag next-up-tag">Next up</span>' : ''}${renderTaskTags(task)}${completion}${task.recurrence ? '<span class="recurrence">↻</span>' : ''}</div></div><button class="row-more" data-action="${isTeamTask ? 'edit-team-task' : 'open-task'}" data-id="${isTeamTask ? encodedTeamId : task.id}" aria-label="${isTeamTask ? `Edit ${escapeHtml(task.title)}` : `Open ${escapeHtml(task.title)}`}">${isTeamTask ? 'Edit' : '···'}</button></div>`;
+  return `<div class="task-row ${isTeamTask ? 'team-task-feed-row' : ''} ${isNextUp ? 'is-next-up' : ''} ${task.status === 'completed' ? 'is-complete' : ''} ${isOverdue(task) ? 'is-overdue' : ''}" data-task-id="${task.id}" data-drop-date="${displayDate || ''}" ${draggable} title="${isTeamTask ? 'Team task' : 'Drag to reorder or move this task'}"><button class="checkbox priority-${task.priority || 1} ${task.status === 'completed' ? 'checked' : ''}" data-action="${toggleAction}" data-id="${encodedTeamId}" aria-label="${task.status === 'completed' ? 'Restore' : 'Complete'} ${escapeHtml(task.title)}">${task.status === 'completed' ? '✓' : ''}</button><div class="task-main"><button class="task-title" data-action="${titleAction}" data-id="${isTeamTask ? task.teamProjectId : task.id}">${escapeHtml(task.title)}</button><div class="task-meta">${displayTime ? `<span>${formatTime(displayTime)}</span>` : displayDate ? `<span>${formatDate(displayDate)}</span>` : ''}${isPlannerDisplayedAsPlanned(task) ? '<span class="planned-label">Planned</span>' : ''}${task.duration ? `<span>· ${task.duration} min</span>` : ''}${isNextUp ? '<span class="tag next-up-tag">Next up</span>' : ''}${renderTaskTags(task)}${completion}${task.recurrence ? '<span class="recurrence">↻</span>' : ''}</div></div><button class="row-more" data-action="${isTeamTask ? 'edit-team-task' : 'open-task'}" data-id="${isTeamTask ? encodedTeamId : task.id}" aria-label="${isTeamTask ? `Edit ${escapeHtml(task.title)}` : `Open ${escapeHtml(task.title)}`}">${isTeamTask ? 'Edit' : '···'}</button></div>`;
 }
 function renderTaskSkeletons(count = 3) { return `<div class="task-skeleton-list" aria-hidden="true">${Array.from({ length: count }, () => '<div class="task-skeleton-row"><span class="skeleton skeleton-check"></span><span class="skeleton skeleton-task-copy"></span><span class="skeleton skeleton-more"></span></div>').join('')}</div>`; }
 function emptyState(title = 'Clear space, clear mind', message = 'Nothing else is scheduled here.') { return `<div class="empty-state"><div class="empty-icon">✓</div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(message)}</p></div>`; }
@@ -3441,6 +3441,26 @@ function saveDrawerTask(id) {
   const explicitExecutionTime = Boolean(nextDueTime);
   const nextExecutionDate = nextDueDate;
   const nextExecutionTime = nextDueTime;
+  const nextPriority = Number(document.querySelector('#drawer-priority').value);
+  const nextAssignmentType = document.querySelector('#drawer-assignment-type').value;
+  const nextProject = projectValue === '__new_project__' ? task.project || null : projectValue || null;
+  const nextDescription = document.querySelector('#drawer-description').value;
+  const durationChanged = duration !== previousDuration;
+  const wasPlannerAllocated = isPlannerAllocatedExecution(task);
+  const taskEdited = Boolean(
+    timingChanged
+    || durationChanged
+    || task.title !== nextTitle
+    || Number(task.priority) !== nextPriority
+    || task.assignmentType !== nextAssignmentType
+    || task.className !== nextClassName
+    || (task.project || null) !== nextProject
+    || JSON.stringify(task.recurrence || null) !== JSON.stringify(nextRecurrence)
+    || (task.description || '') !== nextDescription
+    || (task.eventReminderEnabled === true) !== reminderSettings.eventReminderEnabled
+    || (task.eventReminderRecipient || '') !== reminderSettings.eventReminderRecipient
+  );
+  const promoteEditedPlannedTask = wasPlannerAllocated && taskEdited;
   if (task.status !== 'completed' && timingChanged && isPastSchedule(nextExecutionDate, nextExecutionTime, new Date())) {
     showToast('Tasks cannot be scheduled in the past. Choose today or a future date and time.');
     return;
@@ -3462,15 +3482,15 @@ function saveDrawerTask(id) {
     schedulingIdentity: timingChanged && task.type === 'study_session' ? `${task.relatedAssessmentId || 'study'}:${nextDueDate || ''}:${nextDueTime || ''}` : task.schedulingIdentity,
     duration,
     remainingDuration: nextRemainingDuration,
-    priority: Number(document.querySelector('#drawer-priority').value),
-    assignmentType: document.querySelector('#drawer-assignment-type').value,
+    priority: nextPriority,
+    assignmentType: nextAssignmentType,
     assignmentTypeExplicit: true,
     className: nextClassName,
     calendarClassManuallySet: task.source === 'calendar' && classChanged ? true : task.calendarClassManuallySet,
-    project: projectValue === '__new_project__' ? task.project || null : projectValue || null,
+    project: nextProject,
     recurrence: nextRecurrence,
     idempotencyKey: captureIdentityChanged ? null : task.idempotencyKey,
-    description: document.querySelector('#drawer-description').value,
+    description: nextDescription,
     eventReminderEnabled: reminderToggle ? reminderToggle.checked : task.eventReminderEnabled === true,
     eventReminderRecipient: reminderRecipient ? reminderRecipient.value.trim().slice(0, 80) : task.eventReminderRecipient || '',
     updatedAt: new Date().toISOString()
@@ -3479,11 +3499,14 @@ function saveDrawerTask(id) {
   // scheduled_* fields through the setter. Deadline edits above stay
   // independent from execution edits.
   setTaskExecution(task, nextExecutionDate, nextExecutionTime);
+  // A planner-generated slot is provisional only until the user edits the
+  // task. Preserve the edited task as an anchor before duration reflow so
+  // later flexible work moves around it instead of moving it back.
+  if (promoteEditedPlannedTask) promotePlannerAllocationToUserFixed(task, { force: true });
   if (timingChanged) task.scheduleOrigin = SCHEDULE_ORIGINS.USER_SCHEDULED;
   else if (!task.scheduledDate && !task.scheduledTime && !task.dueTime) task.scheduleOrigin = SCHEDULE_ORIGINS.UNSCHEDULED;
   else task.scheduleOrigin = scheduleOriginOf(task);
   const replannedAssessmentWork = replanAssessmentWork({ persist: false });
-  const durationChanged = duration !== previousDuration;
   // Reflow every affected day after every timing or duration edit. This is a
   // local deterministic chain: rigid anchors stay put, while flexible work
   // after 4:00 PM is recalculated from the current durations each time.

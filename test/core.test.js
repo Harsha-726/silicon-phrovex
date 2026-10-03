@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addDays, assignUniqueClassHues, assessmentIdempotencyKey, assessmentSessionIdentity, assessmentTitle, assignmentTypeLabel, buildPlanningState, cleanCaptureInput, cleanTaskTitle, deadlineRisk, expandRecurringTask, findOpenSlot, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isOverdue, isPastSchedule, isRigidExecution, makeTask, matchExistingClass, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, rankRecommendations, recommendNextAction, recordCompletion, removeClassFromTitle, resolveDatePhrase, resolveDuration, resolvePriority, resolveStudyDates, resolveTimePhrase, scheduleOriginOf, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, setTaskExecution, splitCaptureInput, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, updateStreak, urgencyScore, INTENTS } from '../src/core.js';
+import { addDays, assignUniqueClassHues, assessmentIdempotencyKey, assessmentSessionIdentity, assessmentTitle, assignmentTypeLabel, buildPlanningState, cleanCaptureInput, cleanTaskTitle, deadlineRisk, expandRecurringTask, findOpenSlot, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isOverdue, isPastSchedule, isPlannerAllocatedExecution, isPlannerDisplayedAsPlanned, isRigidExecution, makeTask, matchExistingClass, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, promotePlannerAllocationToUserFixed, rankRecommendations, recommendNextAction, recordCompletion, removeClassFromTitle, resolveDatePhrase, resolveDuration, resolvePriority, resolveStudyDates, resolveTimePhrase, scheduleOriginOf, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, setTaskExecution, splitCaptureInput, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, updateStreak, urgencyScore, INTENTS } from '../src/core.js';
 import { inferSchoologyClassHint, isNonAcademicSchoologyEvent, parseICal } from '../src/ical.js';
 import { getNextBestAction, replanAssessmentSessions } from '../src/core.js';
 import { rankNextUpSameDay } from '../src/core.js';
@@ -972,6 +972,58 @@ test('fixed assignment timings stay anchored while planned work moves around the
   const plan = planWorkload(state, { horizonDays: 0 });
   assert.equal(plan.scheduled.some(action => action.item.id === 'fixed-assignment'), false);
   assert.equal(plan.scheduled.find(action => action.item.id === 'planned-work')?.time, '17:40');
+});
+
+test('editing a planned allocation promotes its current slot to a fixed user anchor', () => {
+  const task = {
+    id: 'edited-planned',
+    title: 'Homework',
+    type: 'task',
+    assignmentType: 'homework',
+    status: 'open',
+    dueDate: '2026-08-25',
+    scheduledDate: '2026-08-25',
+    scheduledTime: '16:30',
+    duration: 120,
+    autoScheduled: true,
+    userScheduled: false,
+    userPinned: false,
+    explicitExecution: false,
+    scheduleOrigin: SCHEDULE_ORIGINS.SILICO_SCHEDULED,
+    flexibility: 'planned'
+  };
+
+  assert.equal(isPlannerAllocatedExecution(task), true);
+  assert.equal(isPlannerDisplayedAsPlanned(task), true);
+  promotePlannerAllocationToUserFixed(task);
+  assert.equal(task.autoScheduled, false);
+  assert.equal(task.userScheduled, true);
+  assert.equal(task.userPinned, true);
+  assert.equal(task.explicitExecution, true);
+  assert.equal(task.flexibility, 'fixed');
+  assert.equal(isRigidExecution(task), true);
+  assert.equal(isPlannerDisplayedAsPlanned(task), false);
+});
+
+test('a longer edited planned task pushes later planned work around its fixed slot', () => {
+  const edited = {
+    id: 'edited-planned', title: 'Homework', type: 'task', assignmentType: 'homework', status: 'open',
+    dueDate: '2026-08-25', scheduledDate: '2026-08-25', scheduledTime: '16:30', duration: 120,
+    autoScheduled: true, scheduleOrigin: SCHEDULE_ORIGINS.SILICO_SCHEDULED, flexibility: 'planned'
+  };
+  promotePlannerAllocationToUserFixed(edited);
+  const state = buildPlanningState({
+    currentTime: new Date(2026, 7, 25, 12, 0),
+    profile: { preferredStart: '16:00', latestStudyTime: '22:00', preferredBreakMinutes: 10 },
+    tasks: [edited, {
+      id: 'later-planned', title: 'Later work', type: 'task', assignmentType: 'homework', status: 'open',
+      dueDate: '2026-08-25', scheduledDate: '2026-08-25', scheduledTime: '17:00', duration: 30,
+      autoScheduled: true, scheduleOrigin: SCHEDULE_ORIGINS.SILICO_SCHEDULED, flexibility: 'planned'
+    }]
+  });
+  const plan = planWorkload(state, { horizonDays: 0 });
+  assert.equal(plan.scheduled.some(action => action.item.id === 'edited-planned'), false);
+  assert.equal(plan.scheduled.find(action => action.item.id === 'later-planned')?.time, '18:40');
 });
 
 test('multiple manually fixed tasks on one day remain independent anchors', () => {

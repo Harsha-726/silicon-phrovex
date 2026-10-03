@@ -461,6 +461,39 @@ export function isFlexibleSchedule(task = {}) {
     && ['flexible', 'planned', undefined, null].includes(task.flexibility);
 }
 
+// A planned execution is a time chosen by Silico, not a user commitment.
+// Keep this definition independent from the display layer so edits, planner
+// passes, and persistence all agree on when a slot is still movable.
+export function isPlannerAllocatedExecution(task = {}) {
+  return task.status !== 'completed'
+    && task.autoScheduled === true
+    && task.flexibility === 'planned'
+    && task.userScheduled !== true
+    && task.userPinned !== true
+    && Boolean(task.scheduledDate && task.scheduledTime);
+}
+
+// Editing a task that already has a Silico-generated slot is an explicit user
+// decision about that slot. Freeze the current execution, while leaving hard
+// commitments (tests, imported events, and fixed events) unchanged.
+export function promotePlannerAllocationToUserFixed(task = {}, { force = false } = {}) {
+  if ((!force && !isPlannerAllocatedExecution(task)) || task.status === 'completed' || !task.scheduledDate || !task.scheduledTime) return task;
+  task.autoScheduled = false;
+  task.userScheduled = true;
+  task.userPinned = true;
+  task.executionPinned = true;
+  task.explicitExecution = true;
+  task.scheduleOrigin = SCHEDULE_ORIGINS.USER_SCHEDULED;
+  task.flexibility = 'fixed';
+  task.scheduleChangeReason = null;
+  task.scheduleChangeMessage = null;
+  return task;
+}
+
+export function isPlannerDisplayedAsPlanned(task = {}) {
+  return isPlannerAllocatedExecution(task);
+}
+
 export function taskSort(a, b) {
   // Display order follows the execution timestamp. A due date is only the
   // fallback for work that has not received a separate execution allocation.
