@@ -470,6 +470,7 @@ export function isPlannerAllocatedExecution(task = {}) {
     && task.flexibility === 'planned'
     && task.userScheduled !== true
     && task.userPinned !== true
+    && !isRigidExecution(task)
     && Boolean(task.scheduledDate && task.scheduledTime);
 }
 

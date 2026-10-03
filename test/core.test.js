@@ -995,6 +995,7 @@ test('editing a planned allocation promotes its current slot to a fixed user anc
 
   assert.equal(isPlannerAllocatedExecution(task), true);
   assert.equal(isPlannerDisplayedAsPlanned(task), true);
+  assert.equal(isPlannerAllocatedExecution({ ...task, type: 'fixed_event', source: 'calendar' }), false);
   promotePlannerAllocationToUserFixed(task);
   assert.equal(task.autoScheduled, false);
   assert.equal(task.userScheduled, true);
