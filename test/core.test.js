@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addDays, assignUniqueClassHues, assessmentIdempotencyKey, assessmentSessionIdentity, assessmentTitle, assignmentTypeLabel, buildPlanningState, cleanCaptureInput, cleanTaskTitle, deadlineRisk, expandRecurringTask, findOpenSlot, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isOverdue, isPastSchedule, isPlannerAllocatedExecution, isPlannerDisplayedAsPlanned, isRigidExecution, makeTask, matchExistingClass, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, promotePlannerAllocationToUserFixed, rankRecommendations, recommendNextAction, recordCompletion, removeClassFromTitle, resolveDatePhrase, resolveDuration, resolvePriority, resolveStudyDates, resolveTimePhrase, scheduleOriginOf, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, setTaskExecution, splitCaptureInput, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, updateStreak, urgencyScore, INTENTS } from '../src/core.js';
+import { addDays, assignUniqueClassHues, assessmentIdempotencyKey, assessmentSessionIdentity, assessmentTitle, assignmentTypeLabel, buildPlanningState, cleanCaptureInput, cleanTaskTitle, deadlineRisk, expandRecurringTask, findOpenSlot, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isHardSchedulingAnchor, isOverdue, isPastSchedule, isPlannerAllocatedExecution, isPlannerDisplayedAsPlanned, isRigidExecution, makeTask, matchExistingClass, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, promotePlannerAllocationToUserFixed, rankRecommendations, recommendNextAction, recordCompletion, removeClassFromTitle, resolveDatePhrase, resolveDuration, resolvePriority, resolveStudyDates, resolveTimePhrase, scheduleOriginOf, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, setTaskExecution, splitCaptureInput, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, updateStreak, urgencyScore, INTENTS } from '../src/core.js';
 import { inferSchoologyClassHint, isNonAcademicSchoologyEvent, parseICal } from '../src/ical.js';
 import { getNextBestAction, replanAssessmentSessions } from '../src/core.js';
 import { rankNextUpSameDay } from '../src/core.js';
@@ -81,6 +81,8 @@ test('explicit assessment times remain rigid while flexible work moves around th
 });
 
 test('legacy planner timestamps on ordinary work are flexible until explicitly pinned', () => {
+  assert.equal(isHardSchedulingAnchor({ type: 'fixed_event', source: 'calendar' }), true);
+  assert.equal(isHardSchedulingAnchor({ type: 'study_session', assignmentType: 'study', source: 'scheduler' }), false);
   assert.equal(isRigidExecution({ assignmentType: 'homework', scheduledDate: '2026-08-25', scheduledTime: '16:30', autoScheduled: false }), false);
   assert.equal(isRigidExecution({ assignmentType: 'homework', scheduledDate: '2026-08-25', scheduledTime: '16:30', executionPinned: true }), false);
   assert.equal(isRigidExecution({ assignmentType: 'homework', scheduledDate: '2026-08-25', scheduledTime: '16:30', executionPinned: true, explicitExecution: true }), true);

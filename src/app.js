@@ -1,4 +1,4 @@
-import { ASSIGNMENT_TYPES, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, addDays, assignUniqueClassHues, assignmentTypeLabel, assessmentTitle, buildPlanningState, cleanTaskTitle, clearTaskExecution, dateAt, deadlineRisk, expandRecurringTask, extractSubject, formatDate, formatLongDate, formatTime, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isDateKey, isOverdue, isPastSchedule, isPlannerAllocatedExecution, isPlannerDisplayedAsPlanned, isRigidExecution, makeTask, matchExistingClass, normalizeClassColorKey, normalizeRecurrence, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, promotePlannerAllocationToUserFixed, rankNextUpSameDay, rankRecommendations, recommendNextAction, replanAssessmentSessions, recordCompletion, recurrenceFromText, removeClassFromTitle, resolvePriority, scheduleOriginOf, seedState, setTaskExecution, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, uid, updateStreak, INTENTS } from './core.js';
+import { ASSIGNMENT_TYPES, SCHEDULE_ORIGINS, SCHEDULE_CHANGE_REASONS, addDays, assignUniqueClassHues, assignmentTypeLabel, assessmentTitle, buildPlanningState, cleanTaskTitle, clearTaskExecution, dateAt, deadlineRisk, expandRecurringTask, extractSubject, formatDate, formatLongDate, formatTime, gamificationLevel, generateCandidateWindows, inferAssignmentType, isClearedByTaskTombstone, isDateKey, isHardSchedulingAnchor, isOverdue, isPastSchedule, isPlannerAllocatedExecution, isPlannerDisplayedAsPlanned, isRigidExecution, makeTask, matchExistingClass, normalizeClassColorKey, normalizeRecurrence, parseCapture, planStudySessions, planStudySessionsOnDates, planWorkload, planningSummary, promotePlannerAllocationToUserFixed, rankNextUpSameDay, rankRecommendations, recommendNextAction, replanAssessmentSessions, recordCompletion, recurrenceFromText, removeClassFromTitle, resolvePriority, scheduleOriginOf, seedState, setTaskExecution, stableColorHue, taskExecution, taskSort, taskSyncTimestamp, teamTaskFeedRecord, titleCaseTaskTitle, toDateKey, uid, updateStreak, INTENTS } from './core.js';
 import { parseCaptureCommands } from './capture.js';
 import { filterCalendarEvents, inferSchoologyClassHint, isNonAcademicSchoologyEvent, isPastImportedOneTimeTask, matchesImportedCalendarTask, parseICal, preserveImportedCalendarTask, reconcilePersistedImportedCalendarTask, repairImportedCalendarClass } from './ical.js';
 import { clerk, clerkLoadOptions, platformStatus } from './platform.js';
@@ -2564,8 +2564,13 @@ function reflowDurationChain(dateKey, { anchorFromPreferredStart = false } = {})
     });
   if (!tasks.length) return [];
   const breakMinutes = Math.max(0, Math.min(30, Number(state.profile.preferredBreakMinutes || state.profile.preferredBreakLength) || 10));
-  const fixedTasks = tasks.filter(task => isRigidExecution(task));
-  const fixedBlocks = fixedTasks.map(task => {
+  const hardTasks = tasks.filter(task => isHardSchedulingAnchor(task));
+  const fixedTasks = tasks.filter(task => isRigidExecution(task) && !isHardSchedulingAnchor(task));
+  const taskBlocks = [...new Set([...hardTasks, ...fixedTasks])].map(task => {
+    const start = timeToMinutes(task.scheduledTime || task.dueTime || taskDisplayTime(task));
+    return { start, end: start + (Number(task.remainingDuration ?? task.duration) || 30) };
+  }).filter(block => Number.isFinite(block.start));
+  const hardBlocks = hardTasks.map(task => {
     const start = timeToMinutes(task.scheduledTime || task.dueTime || taskDisplayTime(task));
     return { start, end: start + (Number(task.remainingDuration ?? task.duration) || 30) };
   }).filter(block => Number.isFinite(block.start));
@@ -2580,7 +2585,7 @@ function reflowDurationChain(dateKey, { anchorFromPreferredStart = false } = {})
   const changed = [];
   for (const task of tasks) {
     const duration = Math.max(1, Number(task.remainingDuration ?? task.duration) || 30);
-    if (fixedTasks.includes(task)) {
+    if (hardTasks.includes(task)) {
       const fixedStart = timeToMinutes(task.scheduledTime || task.dueTime || taskDisplayTime(task));
       // Morning rigid commitments must not move the after-school cursor to
       // noon. They only affect flexible work when their interval reaches the
@@ -2588,10 +2593,29 @@ function reflowDurationChain(dateKey, { anchorFromPreferredStart = false } = {})
       if (Number.isFinite(fixedStart) && fixedStart + duration > preferredStart) cursor = Math.max(cursor, fixedStart + duration + breakMinutes);
       continue;
     }
+    if (fixedTasks.includes(task)) {
+      const fixedStart = timeToMinutes(task.scheduledTime || task.dueTime || taskDisplayTime(task));
+      const collidingHardBlock = hardBlocks.find(block => fixedStart < block.end && fixedStart + duration > block.start);
+      const nextFixedStart = Math.max(Number.isFinite(fixedStart) ? fixedStart : cursor, cursor, collidingHardBlock?.end ? collidingHardBlock.end + breakMinutes : 0);
+      if (Number.isFinite(nextFixedStart) && nextFixedStart !== fixedStart) {
+        setTaskExecution(task, dateKey, toClock(nextFixedStart));
+        if (task.type === 'study_session') {
+          task.dueDate = dateKey;
+          task.dueTime = toClock(nextFixedStart);
+        }
+        task.scheduleChangeReason = SCHEDULE_CHANGE_REASONS.HARD_COMMITMENT_CONFLICT;
+        task.scheduleChangeMessage = `${task.title} conflicted with a fixed calendar or assessment time, so I moved it to ${formatDate(dateKey, { month: 'short', day: 'numeric' })} at ${formatTime(toClock(nextFixedStart))}.`;
+        task.schedulingReason = task.scheduleChangeMessage;
+        task.updatedAt = new Date().toISOString();
+        changed.push(task);
+      }
+      cursor = Math.max(cursor, nextFixedStart + duration + breakMinutes);
+      continue;
+    }
     // A flexible task must fit completely, including its break, before a
     // later rigid commitment. If it would consume that gap, continue after
     // the commitment instead of leaving an overlap or a too-short break.
-    const blockingFixed = fixedBlocks.find(block => block.start >= cursor && cursor + duration + breakMinutes > block.start);
+    const blockingFixed = taskBlocks.find(block => block.start >= cursor && cursor + duration + breakMinutes > block.start);
     if (blockingFixed) cursor = Math.max(cursor, blockingFixed.end + breakMinutes);
     const nextTime = toClock(cursor);
     if (taskDisplayDate(task) !== dateKey || taskDisplayTime(task) !== nextTime) {

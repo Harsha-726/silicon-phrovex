@@ -424,6 +424,17 @@ export function isUserControlledSchedule(task = {}) {
   return scheduleOriginOf(task) === SCHEDULE_ORIGINS.USER_SCHEDULED || task.userPinned === true;
 }
 
+// These commitments are externally timed or academically date/time-bound.
+// They outrank ordinary user-fixed work when a later duration change creates
+// a collision; the ordinary task is the one that must be moved.
+export function isHardSchedulingAnchor(task = {}) {
+  const assignmentType = String(task.assignmentType || '').toLowerCase();
+  return task.type === 'fixed_event'
+    || task.source === 'calendar'
+    || task.type === 'assessment'
+    || ['test', 'quiz', 'event', 'meeting', 'club_meeting', 'presentation'].includes(assignmentType);
+}
+
 // Explicit execution times, imported commitments, and assessments are rigid
 // anchors. A date-only task is anchored to its date but can receive a flexible
 // after-school time.
@@ -442,9 +453,7 @@ export function isRigidExecution(task = {}) {
     && task.type !== 'fixed_event'
     && task.source !== 'calendar') return false;
   return userFixedExecution
-    || task.type === 'fixed_event'
-    || task.type === 'assessment'
-    || task.source === 'calendar'
+    || isHardSchedulingAnchor(task)
     // Legacy records without authority metadata are treated conservatively
     // when they already contain a complete scheduled timestamp.
     || !flexibleAssignment && task.autoScheduled !== true && task.userScheduled !== true && task.source !== 'scheduler' && task.type !== 'study_session' && task.assignmentType !== 'study' && Boolean(task.scheduledDate && task.scheduledTime)
